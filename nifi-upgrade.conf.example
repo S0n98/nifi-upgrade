@@ -1,0 +1,43 @@
+# nifi-upgrade.conf - settings for nifi-upgrade.sh  (bash syntax, sourced)
+
+# ---- cluster ------------------------------------------------------------------------------------
+NODES="nifi-1.example.com nifi-2.example.com nifi-3.example.com"   # "local" = run on this host only
+SSH_USER=ops                                  # needs passwordless sudo on the nodes
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10"
+NIFI_API_URL=https://nifi-1.example.com:8443/nifi-api   # any node; requests are replicated by the coordinator
+
+# ---- versions / distribution --------------------------------------------------------------------
+OLD_VERSION=2.0.0-M4
+NEW_VERSION=2.12.0
+DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each node downloads ...
+#DIST_ZIP=/srv/dist/nifi-2.12.0-bin.zip                                   # ... or the admin host pushes this file
+# value of https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512 (verify the .asc too!)
+DIST_SHA512=5891039ccf15234bb21c2d1c...REPLACE_WITH_FULL_VALUE
+
+# ---- layout on the nodes (same as the tested single-node layout) --------------------------------
+NIFI_BASE=/opt/nifi                  # contains nifi-<version>/ directories
+NIFI_LINK=/opt/nifi/current          # systemd unit runs $NIFI_LINK/bin/nifi.sh run
+SERVICE=nifi
+NIFI_USER=nifi
+MIN_FREE_GB=4
+
+# ---- backup -------------------------------------------------------------------------------------
+BACKUP_DIR=/var/backups/nifi         # per node; data dirs are discovered from nifi.properties
+BACKUP_COMPRESS=zstd                 # gzip | zstd | none  (content repos can be large)
+BACKUP_EXTRA_PATHS="/etc/nifi-tls"   # anything else outside the install dir worth keeping
+
+# ---- ZooKeeper (external) ----------------------------------------------------------------------
+# run on the admin host after all NiFi nodes are stopped; cluster-scoped processor state (e.g. List* in cluster scope) lives in ZK
+ZK_BACKUP_CMD='ssh ops@zk-1.example.com "sudo /opt/zookeeper/bin/zkSnapshotBackup.sh /var/backups/zk/pre-nifi-2.12.0"'
+
+# ---- behaviour ----------------------------------------------------------------------------------
+COPY_CUSTOM_NARS=no                  # yes = copy *.nar from old extensions/ (only if rebuilt/compatible)
+DRAIN_TIMEOUT=900                    # seconds to let queues drain after sources stop
+DRAIN_SETTLE_POLLS=6                 # stop waiting when the queue count is unchanged for N x 10 s
+START_TIMEOUT=1800                   # seconds to wait for all nodes to connect after start
+
+# ---- API authentication (pick one) --------------------------------------------------------------
+NIFI_CA_CERT=/etc/nifi-tls/ca.pem
+NIFI_CLIENT_CERT=/etc/nifi-tls/admin-client.pem   # admin client certificate (recommended for automation)
+NIFI_CLIENT_KEY=/etc/nifi-tls/admin-client.key
+#NIFI_TOKEN_CMD="/usr/local/bin/get-nifi-token"   # or: a command printing a bearer token

@@ -1,0 +1,7 @@
+# per-run artifacts (inventories, node logs) and site-specific config
+runs/
+nifi-upgrade.conf
+*.env
+*token*
+__pycache__/
+*.pyc
