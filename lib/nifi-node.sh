@@ -81,6 +81,27 @@ cmd_preflight() {
   if zcat "$(abspath "$OLD_HOME" "$(prop "$OLD_HOME/conf/nifi.properties" nifi.flow.configuration.file)")" 2>/dev/null | grep -q '"type":"python\.'; then
     log "INFO flow contains Python processors typed 'python.<Name>' - patch-flow will rename them for $NEW_VERSION"
   fi
+  # network: where will the new release come from?
+  if [ -f "$STAGE_DIR/nifi-$NEW_VERSION-bin.zip" ]; then log "ok   release zip already on node ($STAGE_DIR) - no download needed"
+  elif [ -n "${DIST_URL:-}" ]; then log "INFO stage will download $DIST_URL (needs access to that host; use DIST_ZIP for air-gapped nodes)"
+  else log "INFO stage expects DIST_ZIP pushed from the admin host (no DIST_URL set)"; fi
+  # Python processors that declare dependencies are pip-installed by NiFi into nifi.python.working.directory
+  local pyext pywork deps
+  pyext=$(prop "$OLD_HOME/conf/nifi.properties" nifi.python.extensions.source.directory.default)
+  if [ -n "$pyext" ] && [ -d "$(abspath "$OLD_HOME" "$pyext")" ]; then
+    deps=$( { find "$(abspath "$OLD_HOME" "$pyext")" -name requirements.txt; \
+              grep -rlE '^\s*dependencies\s*=' --include='*.py' "$(abspath "$OLD_HOME" "$pyext")"; } 2>/dev/null | sort -u | tr '\n' ' ' || true)
+    pywork=$(abspath "$OLD_HOME" "$(prop "$OLD_HOME/conf/nifi.properties" nifi.python.working.directory)")
+    if [ -n "$deps" ]; then
+      case "$pywork" in
+        "$OLD_HOME"/*) log "WARN Python processors declare pip dependencies ($deps) and nifi.python.working.directory=$pywork is inside the install dir:" \
+                           "the new version will pip-install them on first start -> needs PyPI or a mirror (PIP_INDEX_URL / pip.conf for user $NIFI_USER), or externalize the directory first" ;;
+        *) log "ok   Python dependencies cached in $pywork (reused; pip runs again only for new/changed processor versions)" ;;
+      esac
+    else
+      log "ok   Python processors declare no pip dependencies - no package index needed"
+    fi
+  fi
   [ "$(prop "$OLD_HOME/conf/nifi.properties" nifi.cluster.is.node)" = "true" ] && log "INFO clustered node, ZK: $(prop "$OLD_HOME/conf/nifi.properties" nifi.zookeeper.connect.string)"
   [ $rc -eq 0 ] && log "preflight PASSED" || log "preflight FAILED"
   return $rc

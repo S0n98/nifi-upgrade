@@ -22,8 +22,10 @@ all data outside the install directory. Automation: `nifi-upgrade.sh` (run from 
 
 ```
 preflight  read-only: Java 21, python3/unzip, disk, sensitive key set, every data path outside the install dir,
-           backup space, custom NARs, Python processors; cluster: all nodes CONNECTED, no ghost components
-stage      no downtime: download + SHA-512 check, unzip next to the old version, carry configuration:
+           backup space, custom NARs, Python processors, network needs (release zip source, Python pip
+           dependencies); cluster: all nodes CONNECTED, no ghost components
+stage      no downtime: get the zip (DIST_URL download, or DIST_ZIP pushed from the admin host / already in
+           STAGE_DIR), SHA-512 check, unzip next to the old version, carry configuration:
              nifi.properties   OLD values for every key present in both versions (incl. keys the new file ships
                                commented-out, e.g. nifi.python.command); removed keys -> REVIEW list
              bootstrap.conf    heap/java.arg values carried; removed keys -> REVIEW list
@@ -68,6 +70,19 @@ rollback   restore every node from its backup, point the symlink back, start the
 10. Fill in `nifi-upgrade.conf` (copy the example). Get `DIST_SHA512` from
     `https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512` and verify the `.asc` signature
     against the Apache NiFi `KEYS` file.
+11. **Network / air-gapped nodes.** The upgrade needs no internet access if you prepare these
+    (`preflight` reports each one):
+    * **Release zip**: download and verify it on a connected machine, then set `DIST_ZIP=/path/on/admin-host.zip`
+      and leave `DIST_URL` empty (the zip is copied to every node), or place `nifi-2.12.0-bin.zip` in `STAGE_DIR`
+      on each node.
+    * **Python processor dependencies**: NiFi runs `pip install` on first start for Python processors that declare
+      dependencies (`requirements.txt` / `ProcessorDetails.dependencies`), into `nifi.python.working.directory`
+      (default `./work/python` = inside the install dir, so every new version re-installs). Externalize that
+      directory before the upgrade (e.g. `/var/lib/nifi/work/python`, it is then carried over and reused), or
+      point pip at an internal mirror: `/etc/pip.conf` (`index-url = ...`), and `UV_INDEX_URL` if `uv` is
+      installed (NiFi prefers `uv`). Processors without dependencies need nothing.
+    * **OS packages** (Java 21, python3, unzip) from an internal mirror; the **OIDC IdP** must be reachable from
+      every node at startup (an internal IdP is fine).
 
 ## 4. Procedure
 
@@ -121,6 +136,10 @@ Not undone by a rollback:
 2.0.0-M4 has no GitLab client; 2.12.0 has `GitLabFlowRegistryClient`. NiFi 2.12 works fine with Registry 2.0.0-M4
 (commit, change version, revert all tested), so migrate **after** the upgrade has settled.
 
+Network: internal only. The tool talks to the NiFi API; NiFi talks to NiFi Registry and to GitLab; the tool calls
+the GitLab API directly only to create missing bucket directories. Every NiFi node needs HTTPS to GitLab (outbound
+internet only if you use gitlab.com).
+
 1. GitLab: project (e.g. `nifi/nifi-flows`, branch `main`), project access token (role Maintainer, scope `api`).
 2. NiFi (Controller Settings): if GitLab uses a private CA, create a controller-level **StandardSSLContextService**
    with a truststore holding that CA. Add a **GitLabFlowRegistryClient**: API URL, Repository Namespace, Repository Name,
@@ -169,6 +188,10 @@ in queues), NiFi Registry 2.0.0-M4 with 50 versioned flows / 63 versions.
   second upgrade clean.
 * Registry → GitLab: 50/50 flows, 63 versions, history order and content verified, version change / commit /
   import from GitLab all working; re-run after rollback resumed without duplicating history.
+
+**Network:** the test host had internet access; downloads were the only external calls (release zips, GitLab image).
+The test Python processor declares no dependencies, so NiFi did not run pip (log: "All dependencies have already been
+imported"). The `DIST_ZIP` path in `local` mode and the pip-mirror setup were not exercised end to end.
 
 **Not tested here** (rehearse on staging): a real multi-node cluster (parallel SSH, flow election, node reconnection),
 external ZooKeeper and `ZK_BACKUP_CMD`, client-certificate API authentication, large repositories / backup duration.

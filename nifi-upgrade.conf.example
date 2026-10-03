@@ -9,8 +9,9 @@ NIFI_API_URL=https://nifi-1.example.com:8443/nifi-api   # any node; requests are
 # ---- versions / distribution --------------------------------------------------------------------
 OLD_VERSION=2.0.0-M4
 NEW_VERSION=2.12.0
-DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each node downloads ...
-#DIST_ZIP=/srv/dist/nifi-2.12.0-bin.zip                                   # ... or the admin host pushes this file
+DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each node downloads (needs access to this host) ...
+#DIST_ZIP=/srv/dist/nifi-2.12.0-bin.zip                                   # ... or, air-gapped: the admin host copies this file
+                                                                          #     to every node (then leave DIST_URL empty)
 # value of https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512 (verify the .asc too!)
 DIST_SHA512=5891039ccf15234bb21c2d1c...REPLACE_WITH_FULL_VALUE
 
@@ -29,6 +30,11 @@ BACKUP_EXTRA_PATHS="/etc/nifi-tls"   # anything else outside the install dir wor
 # ---- ZooKeeper (external) ----------------------------------------------------------------------
 # run on the admin host after all NiFi nodes are stopped; cluster-scoped processor state (e.g. List* in cluster scope) lives in ZK
 ZK_BACKUP_CMD='ssh ops@zk-1.example.com "sudo /opt/zookeeper/bin/zkSnapshotBackup.sh /var/backups/zk/pre-nifi-2.12.0"'
+
+# ---- network notes (not settings) --------------------------------------------------------------
+# Python processors with pip dependencies are installed by NiFi on first start of the new version unless
+# nifi.python.working.directory is outside the install dir. Air-gapped: /etc/pip.conf index-url (and UV_INDEX_URL
+# if uv is installed) on every node. preflight prints what applies to your flows.
 
 # ---- behaviour ----------------------------------------------------------------------------------
 COPY_CUSTOM_NARS=no                  # yes = copy *.nar from old extensions/ (only if rebuilt/compatible)

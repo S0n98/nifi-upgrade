@@ -53,6 +53,10 @@ agent_env() { # environment passed to the node agent
 on_node() { # on_node NODE SUBCOMMAND  -> runs the agent on that node, output to RUN_DIR/NODE.log
   local node=$1 sub=$2 env; env=$(agent_env)
   if [ "$node" = local ]; then
+    if [ -n "${DIST_ZIP:-}" ] && [ "$sub" = stage ]; then  # offline: use the zip the operator provided
+      mkdir -p "${STAGE_DIR:-$NIFI_BASE/.staging}"
+      cp "$DIST_ZIP" "${STAGE_DIR:-$NIFI_BASE/.staging}/nifi-$NEW_VERSION-bin.zip"
+    fi
     eval "env $env bash \"\$HERE/lib/nifi-node.sh\" \"\$sub\""
   else
     scp $SSH_OPTS -q "$HERE/lib/nifi-node.sh" "$SSH_USER@$node:$REMOTE_AGENT"

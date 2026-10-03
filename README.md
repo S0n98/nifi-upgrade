@@ -12,7 +12,7 @@ The full operating procedure (timeline, go/no-go criteria, rollback, known issue
 
 | Step | Downtime | What happens |
 |---|---|---|
-| `preflight` | no | Read-only checks on every node: Java 21, disk space, sensitive key set, data stored outside the install directory, backup space, custom NARs, Python processors. Cluster checks: all nodes connected, no ghost components. |
+| `preflight` | no | Read-only checks on every node: Java 21, disk space, sensitive key set, data stored outside the install directory, backup space, custom NARs, Python processors, and network needs (where the release zip comes from, and whether Python processors need pip). Cluster checks: all nodes connected, no ghost components. |
 | `stage` | no | Downloads 2.12.0, checks its SHA-512, unpacks it next to the old version and carries the configuration over. Writes a report of anything that needs a human decision. |
 | `upgrade` | **yes** | Records what is running, drains the queues, stops all nodes and backs each one up (optional ZooKeeper backup hook). Patches the flow for 2.12, switches the symlink and starts all nodes with nothing running. Then verifies that queued data, components, services, users, parameters and version control all survived. |
 | `verify` | – | Re-runs the post-start verification. |
@@ -37,6 +37,22 @@ nifi-upgrade.conf.example       configuration template for a 3-node cluster
 local-test.conf                 configuration used to test on a single host (NODES=local)
 RUNBOOK.md                      operating procedure and test evidence
 ```
+
+## Does it need internet access?
+
+**No — not with the preparation below.** Nothing in the upgrade or the registry migration needs the public internet by
+design; only the items below reach out, and each has an offline alternative.
+
+| What reaches out | When | Offline / air-gapped alternative |
+|---|---|---|
+| NiFi 2.12.0 release zip (`DIST_URL`, e.g. downloads.apache.org) | `stage`, once per node | Set `DIST_ZIP` (zip on the admin host, copied to each node) and leave `DIST_URL` empty, or put `nifi-2.12.0-bin.zip` in `STAGE_DIR` on each node beforehand. `DIST_SHA512` is a config value — nothing is fetched to check it |
+| Release signature check (`.asc` + Apache `KEYS`) | before the change | Do it on any connected machine, then carry the zip and its SHA-512 across |
+| `pip install` of **Python processor dependencies** | first start of 2.12.0 | Only for Python processors that declare dependencies (`requirements.txt` or `ProcessorDetails.dependencies`). NiFi caches them in `nifi.python.working.directory` (default `./work/python`, i.e. inside the install dir, so a new version re-installs). Either externalize that directory before the upgrade, or point pip at an internal mirror (`/etc/pip.conf`; `UV_INDEX_URL` if `uv` is installed — NiFi prefers it). `preflight` warns when this applies |
+| OS packages (Java 21, python3, unzip) | before the change | Internal package mirror |
+| OIDC identity provider | NiFi start + every login | Internal IdP (e.g. self-hosted GitLab) — NiFi must reach its discovery/JWKS URLs at startup |
+| Registry → GitLab migration | after the upgrade | Internal only: admin host → NiFi API; NiFi → NiFi Registry and GitLab; the tool → GitLab API (only to create bucket directories). Needs outbound HTTPS only if your GitLab is gitlab.com |
+
+The admin-host scripts use the Python standard library only — no `pip`.
 
 ## Requirements
 
