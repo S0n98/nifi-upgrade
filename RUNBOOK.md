@@ -60,6 +60,7 @@ rollback   restore every node from its backup, point the symlink back, start the
 4. **Nodes**: Java 21 for the `nifi` user, python3, unzip, `MIN_FREE_GB` free under `/opt/nifi`, space for the backup.
 5. **API credentials for automation**: an admin client certificate (`NIFI_CLIENT_CERT/KEY`) with the same policies
    as the NiFi admin (OIDC browser logins cannot be scripted reliably). Alternatively `NIFI_TOKEN_CMD`.
+   `certs/gen-nifi-certs.sh` issues one; see `certs/NIFI-TLS.md` for the identity string and policies.
 6. **Back up separately**: `nifi.sensitive.props.key` (in `nifi.properties`), keystores and their passwords, ZooKeeper.
 7. **Custom NARs**: rebuild them against 2.12.0. Custom Python processors: test them on 2.12.0
    (the type-name change is handled by `patch-flow`; API changes are not).

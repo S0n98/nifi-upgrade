@@ -4,7 +4,8 @@ Automation and runbook for upgrading an Apache NiFi cluster from **2.0.0-M4** to
 moving versioned flows from **NiFi Registry** to the **GitLab Flow Registry Client** with their full version history.
 
 The full operating procedure (timeline, go/no-go criteria, rollback, known issues, test evidence) is in
-**[RUNBOOK.md](RUNBOOK.md)**. This README covers what the project is and how to get started.
+**[RUNBOOK.md](RUNBOOK.md)**. For an air-gapped RHEL 9 cluster, follow the checklist in
+**[UPGRADE-GUIDE-RHEL9.md](UPGRADE-GUIDE-RHEL9.md)**. This README covers what the project is and how to get started.
 
 ## What it does
 
@@ -36,7 +37,26 @@ migrate-registry-to-gitlab.py   NiFi Registry -> GitLab Flow Registry Client, wi
 nifi-upgrade.conf.example       configuration template for a 3-node cluster
 local-test.conf                 configuration used to test on a single host (NODES=local)
 RUNBOOK.md                      operating procedure and test evidence
+UPGRADE-GUIDE-RHEL9.md          step-by-step offline upgrade of a 3-node RHEL 9 cluster (operator checklist)
+offline/prepare-offline-bundle.sh  build the offline bundle on a machine with internet (zip + checks, Python RPMs/wheels)
+certs/gen-nifi-certs.sh         private CA, node keystores, truststore and admin client certificate
+certs/NIFI-TLS.md               how TLS works in a NiFi cluster; certificate setup, rotation, troubleshooting
 ```
+
+## TLS certificates
+
+NiFi 2.x no longer ships the TLS Toolkit. [`certs/gen-nifi-certs.sh`](certs/gen-nifi-certs.sh) creates a private CA,
+one keystore per node (SAN = hostname + IP, serverAuth + clientAuth), a shared truststore and an admin client
+certificate. Use the admin certificate for `nifi-upgrade.sh` automation.
+
+```bash
+certs/gen-nifi-certs.sh -o ./nifi-certs -s "/C=VN/O=Example" \
+    nifi-1.example.com:10.0.178.10 nifi-2.example.com:10.0.178.11 nifi-3.example.com:10.0.178.12
+```
+
+[`certs/NIFI-TLS.md`](certs/NIFI-TLS.md) explains where NiFi uses TLS, the exact identity strings for
+`authorizers.xml`, deployment, verification, renewal/rotation and troubleshooting. The output directory is ignored by
+git — never commit keys or passwords.
 
 ## Does it need internet access?
 

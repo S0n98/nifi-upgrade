@@ -5,3 +5,9 @@ nifi-upgrade.conf
 *token*
 __pycache__/
 *.pyc
+# generated certificates and secrets (certs/gen-nifi-certs.sh output)
+nifi-certs/
+*.p12
+*.key
+*.password
+*.pem

@@ -102,6 +102,21 @@ cmd_preflight() {
       log "ok   Python processors declare no pip dependencies - no package index needed"
     fi
   fi
+  # NiFi 2.12 runs Python processors only on Python 3.10-3.12 (RHEL 9 default python3 is 3.9)
+  local flowf pycmd pyver
+  flowf=$(abspath "$OLD_HOME" "$(prop "$OLD_HOME/conf/nifi.properties" nifi.flow.configuration.file)")
+  if zcat "$flowf" 2>/dev/null | grep -qE '"type":"(python\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)","bundle":\{"group":"org.apache.nifi","artifact":"python-extensions"'; then
+    pycmd=$(prop "$OLD_HOME/conf/nifi.properties" nifi.python.command); pycmd=${pycmd:-python3}
+    pyver=$(sudo -u "$NIFI_USER" "$pycmd" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo none)
+    case "$pyver" in
+      3.10|3.11|3.12) log "ok   Python processors in flow; nifi.python.command=$pycmd is Python $pyver" ;;
+      *) log "FAIL flow uses Python processors but nifi.python.command=$pycmd is Python $pyver; $NEW_VERSION needs 3.10-3.12" \
+             "(RHEL 9: install python3.12 - rpms/ in the offline bundle - and set nifi.python.command=python3.12 in $OLD_HOME/conf/nifi.properties)"; rc=1 ;;
+    esac
+  fi
+  if [ "${BACKUP_COMPRESS:-gzip}" = zstd ] && ! command -v zstd >/dev/null; then
+    log "FAIL BACKUP_COMPRESS=zstd but zstd is not installed (use gzip or install zstd)"; rc=1
+  fi
   [ "$(prop "$OLD_HOME/conf/nifi.properties" nifi.cluster.is.node)" = "true" ] && log "INFO clustered node, ZK: $(prop "$OLD_HOME/conf/nifi.properties" nifi.zookeeper.connect.string)"
   [ $rc -eq 0 ] && log "preflight PASSED" || log "preflight FAILED"
   return $rc
