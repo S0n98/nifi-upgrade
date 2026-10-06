@@ -1,0 +1,49 @@
+# /etc/systemd/system/nifi.service - Apache NiFi 2.x installed under /data
+#
+# Layout (same on every node):
+#   /data/nifi/nifi-<version>/      unpacked releases (2.0.0-M4, 2.12.0, ...)
+#   /data/nifi/current           -> symlink to the active release (switched by nifi-upgrade.sh)
+#   /data/nifi-data/             everything that must survive upgrades: flow, repositories, state, auth, logs, pid
+#
+# Install:  sudo cp nifi.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now nifi
+# Check:    systemctl status nifi; journalctl -u nifi -f; tail -f /data/nifi-data/logs/nifi-app.log
+
+[Unit]
+Description=Apache NiFi
+Documentation=https://nifi.apache.org/documentation/
+After=network-online.target
+Wants=network-online.target
+# give up after 5 failed starts in 15 min instead of restarting forever (e.g. disk full, bad config)
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nifi
+Group=nifi
+
+# Java 21 (RHEL 9 package java-21-openjdk-headless); confirm with: readlink -f "$(command -v java)"
+Environment=JAVA_HOME=/usr/lib/jvm/jre-21-openjdk
+# make bin/nifi-env.sh honour the variables below (supported by 2.0.0-M4 and 2.12.0)
+Environment=NIFI_OVERRIDE_NIFIENV=true
+# logs and pid outside the versioned install dir, so they stay put across upgrades and rollbacks
+Environment=NIFI_LOG_DIR=/data/nifi-data/logs
+Environment=NIFI_PID_DIR=/data/nifi-data/run
+
+WorkingDirectory=/data/nifi/current
+ExecStart=/data/nifi/current/bin/nifi.sh run
+
+# SIGTERM goes to the bootstrap process only; it shuts the NiFi JVM down gracefully (repositories flushed).
+# Never shorten this to a quick SIGKILL: an unclean stop forces repository recovery on the next start.
+KillMode=mixed
+TimeoutStopSec=600
+SuccessExitStatus=143
+
+Restart=on-failure
+RestartSec=30
+
+LimitNOFILE=50000
+LimitNPROC=10000
+
+[Install]
+WantedBy=multi-user.target

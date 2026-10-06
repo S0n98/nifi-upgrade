@@ -38,6 +38,7 @@ nifi-upgrade.conf.example       configuration template for a 3-node cluster
 local-test.conf                 configuration used to test on a single host (NODES=local)
 RUNBOOK.md                      operating procedure and test evidence
 UPGRADE-GUIDE-RHEL9.md          step-by-step offline upgrade of a 3-node RHEL 9 cluster (operator checklist)
+systemd/nifi.service            systemd unit for the /data layout (logs/pid in /data/nifi-data)
 offline/prepare-offline-bundle.sh  build the offline bundle on a machine with internet (zip + checks, Python RPMs/wheels)
 certs/gen-nifi-certs.sh         private CA, node keystores, truststore and admin client certificate
 certs/NIFI-TLS.md               how TLS works in a NiFi cluster; certificate setup, rotation, troubleshooting
@@ -77,8 +78,9 @@ The admin-host scripts use the Python standard library only — no `pip`.
 ## Requirements
 
 - **Admin host:** bash, python3 (standard library only), and SSH to every node as a user with passwordless sudo.
-- **Nodes:** Java 21, python3 and unzip. NiFi runs as a systemd service from `/opt/nifi/current` →
-  `/opt/nifi/nifi-<version>`. Every repository, state, flow and auth file lives **outside** the install directory
+- **Nodes:** Java 21, python3 and unzip. NiFi runs as a systemd service ([`systemd/nifi.service`](systemd/nifi.service))
+  from `/data/nifi/current` → `/data/nifi/nifi-<version>`, with data, logs and pid in `/data/nifi-data`
+  (layout: [UPGRADE-GUIDE-RHEL9.md, Phase 0](UPGRADE-GUIDE-RHEL9.md#phase-0--install-layout-under-data-and-the-systemd-unit)). Every repository, state, flow and auth file lives **outside** the install directory
   (`preflight` enforces this).
 - **API credentials:** an admin client certificate (`NIFI_CLIENT_CERT` / `NIFI_CLIENT_KEY`), or a command that
   prints a bearer token (`NIFI_TOKEN_CMD`).
@@ -88,7 +90,7 @@ The admin-host scripts use the Python standard library only — no `pip`.
 ```bash
 cp nifi-upgrade.conf.example nifi-upgrade.conf     # set NODES, NIFI_API_URL, DIST_SHA512, auth, backup dir
 ./nifi-upgrade.sh -c nifi-upgrade.conf preflight
-./nifi-upgrade.sh -c nifi-upgrade.conf stage       # then review /opt/nifi/upgrade-report-*.txt on every node
+./nifi-upgrade.sh -c nifi-upgrade.conf stage       # then review /data/nifi/upgrade-report-*.txt on every node
 
 # maintenance window
 ./nifi-upgrade.sh -c nifi-upgrade.conf upgrade     # stops at VERIFY PASSED, with everything still stopped

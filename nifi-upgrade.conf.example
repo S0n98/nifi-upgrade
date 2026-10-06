@@ -16,14 +16,14 @@ DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each
 DIST_SHA512=5891039ccf15234bb21c2d1c...REPLACE_WITH_FULL_VALUE
 
 # ---- layout on the nodes (same as the tested single-node layout) --------------------------------
-NIFI_BASE=/opt/nifi                  # contains nifi-<version>/ directories
-NIFI_LINK=/opt/nifi/current          # systemd unit runs $NIFI_LINK/bin/nifi.sh run
+NIFI_BASE=/data/nifi                  # contains nifi-<version>/ directories
+NIFI_LINK=/data/nifi/current          # systemd unit runs $NIFI_LINK/bin/nifi.sh run
 SERVICE=nifi
 NIFI_USER=nifi
 MIN_FREE_GB=4
 
 # ---- backup -------------------------------------------------------------------------------------
-BACKUP_DIR=/var/backups/nifi         # per node; data dirs are discovered from nifi.properties
+BACKUP_DIR=/data/backups/nifi         # per node; data dirs are discovered from nifi.properties
 BACKUP_COMPRESS=zstd                 # gzip | zstd | none  (content repos can be large)
 BACKUP_EXTRA_PATHS="/etc/nifi-tls"   # anything else outside the install dir worth keeping
 

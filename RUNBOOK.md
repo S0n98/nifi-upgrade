@@ -1,6 +1,6 @@
 # Runbook — NiFi cluster upgrade 2.0.0-M4 → 2.12.0 (+ NiFi Registry → GitLab)
 
-Target: 3-node NiFi cluster, external ZooKeeper, systemd, layout `/opt/nifi/nifi-<version>` + symlink `/opt/nifi/current`,
+Target: 3-node NiFi cluster, external ZooKeeper, systemd, layout `/data/nifi/nifi-<version>` + symlink `/data/nifi/current`,
 all data outside the install directory. Automation: `nifi-upgrade.sh` (run from an admin host over SSH).
 
 > **Why a full-stop upgrade:** NiFi nodes of different versions cannot form one cluster, and 2.0.0-M4 → 2.12.0 is a
@@ -17,6 +17,7 @@ all data outside the install directory. Automation: `nifi-upgrade.sh` (run from 
 | `lib/nifi_api.py` | Cluster-level REST work: record run state, quiesce, wait for nodes, verify, resume |
 | `migrate-registry-to-gitlab.py` | Moves versioned process groups from a NiFi Registry client to the GitLab Flow Registry Client **with full version history** |
 | `nifi-upgrade.conf.example` | Config template — copy to `nifi-upgrade.conf` and edit |
+| `systemd/nifi.service` | systemd unit for the `/data` layout (runs `/data/nifi/current`, logs/pid in `/data/nifi-data`) |
 
 ## 2. What the automation does
 
@@ -32,7 +33,7 @@ stage      no downtime: get the zip (DIST_URL download, or DIST_ZIP pushed from 
              authorizers.xml, login-identity-providers.xml, state-management.xml, zookeeper.properties: copied
              keystores/truststores/users.xml/... (anything in conf/ the distribution does not ship): copied
              logback.xml       not copied, flagged if customised
-           report: /opt/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt on every node
+           report: /data/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt on every node
 upgrade    DOWNTIME
   record     which processors/ports/reporting tasks run, which services are enabled, queue totals, versioning
   quiesce    stop source processors (no input allowed), wait until queues drain or stop changing, stop root group
@@ -41,7 +42,7 @@ upgrade    DOWNTIME
   backup     tar of flow dir, all repositories, state dir, python extensions, users/authorizations files,
              old conf/, systemd unit -> BACKUP_DIR (sha256 alongside)
   patch-flow 2.0.0-M4 stored Python processors as "python.<Name>", 2.12 registers "<Name>" -> rename in flow.json.gz
-  switch     /opt/nifi/current -> nifi-2.12.0, nifi.flowcontroller.autoResumeState=false for the first start
+  switch     /data/nifi/current -> nifi-2.12.0, nifi.flowcontroller.autoResumeState=false for the first start
   start      all nodes together (flow election), wait until all are CONNECTED
   verify     enable the services that were enabled before, then compare with the recorded baseline:
              queued FlowFiles + bytes identical, processor count, no ghost / newly invalid components,
@@ -54,10 +55,10 @@ rollback   restore every node from its backup, point the symlink back, start the
 ## 3. Prerequisites (do these well before the window)
 
 1. **Rehearse on staging** with a copy of production flow + config (see §8 for what was and was not tested).
-2. **Data outside the install directory.** `preflight` fails on any repository/state/flow path under `/opt/nifi/nifi-2.0.0-M4`.
+2. **Data outside the install directory.** `preflight` fails on any repository/state/flow path under `/data/nifi/nifi-2.0.0-M4`.
    Fix on the old version first (stop, move the directory, update `nifi.properties`, start).
 3. **Admin host**: bash, python3, ssh to every node as a user with passwordless sudo.
-4. **Nodes**: Java 21 for the `nifi` user, python3, unzip, `MIN_FREE_GB` free under `/opt/nifi`, space for the backup.
+4. **Nodes**: Java 21 for the `nifi` user, python3, unzip, `MIN_FREE_GB` free under `/data/nifi`, space for the backup.
 5. **API credentials for automation**: an admin client certificate (`NIFI_CLIENT_CERT/KEY`) with the same policies
    as the NiFi admin (OIDC browser logins cannot be scripted reliably). Alternatively `NIFI_TOKEN_CMD`.
    `certs/gen-nifi-certs.sh` issues one; see `certs/NIFI-TLS.md` for the identity string and policies.
@@ -79,7 +80,7 @@ rollback   restore every node from its backup, point the symlink back, start the
     * **Python processor dependencies**: NiFi runs `pip install` on first start for Python processors that declare
       dependencies (`requirements.txt` / `ProcessorDetails.dependencies`), into `nifi.python.working.directory`
       (default `./work/python` = inside the install dir, so every new version re-installs). Externalize that
-      directory before the upgrade (e.g. `/var/lib/nifi/work/python`, it is then carried over and reused), or
+      directory before the upgrade (e.g. `/data/nifi-data/work/python`, it is then carried over and reused), or
       point pip at an internal mirror: `/etc/pip.conf` (`index-url = ...`), and `UV_INDEX_URL` if `uv` is
       installed (NiFi prefers `uv`). Processors without dependencies need nothing.
     * **OS packages** (Java 21, python3, unzip) from an internal mirror; the **OIDC IdP** must be reachable from
@@ -94,7 +95,7 @@ cp nifi-upgrade.conf.example nifi-upgrade.conf && vi nifi-upgrade.conf
 ./nifi-upgrade.sh -c nifi-upgrade.conf preflight      # must end with PREFLIGHT PASSED
 ./nifi-upgrade.sh -c nifi-upgrade.conf stage          # unpacks + configures 2.12.0 next to 2.0.0-M4
 ```
-Review `/opt/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt` on every node. Every `REVIEW` line needs a decision.
+Review `/data/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt` on every node. Every `REVIEW` line needs a decision.
 Expected on a stock config: removed keys `nifi.cluster.protocol.is.secure`, `nifi.content.viewer.url`,
 `nifi.documentation.working.directory`, `nifi.listener.bootstrap.port`; bootstrap keys `java`, `nifi.bootstrap.listen.port`.
 Stage can be re-run with `FORCE_RESTAGE=yes`.
@@ -124,7 +125,7 @@ Triggers: nodes do not connect, VERIFY FAILED and not fixable within the window,
 ./nifi-upgrade.sh -c nifi-upgrade.conf rollback
 ```
 Per node: stop NiFi, move every data directory the new version touched to `<dir>.failed-2.12.0-<ts>` (kept for analysis),
-restore the backup (checksum verified), point `/opt/nifi/current` back to 2.0.0-M4, start. Then the orchestrator waits
+restore the backup (checksum verified), point `/data/nifi/current` back to 2.0.0-M4, start. Then the orchestrator waits
 for the cluster and restarts what was running before the upgrade. Restore ZooKeeper from its backup if
 cluster-scope state must also go back.
 

@@ -135,7 +135,7 @@ For each node:
 ```bash
 H=nifi-1.example.com
 scp nifi-certs/nodes/$H/{keystore.p12,truststore.p12} ops@$H:/tmp/
-ssh ops@$H 'sudo install -o nifi -g nifi -m 600 /tmp/keystore.p12 /tmp/truststore.p12 /opt/nifi/current/conf/ && rm /tmp/*.p12'
+ssh ops@$H 'sudo install -o nifi -g nifi -m 600 /tmp/keystore.p12 /tmp/truststore.p12 /data/nifi/current/conf/ && rm /tmp/*.p12'
 ```
 
 ### 6.2 `nifi.properties` on each node
@@ -218,7 +218,7 @@ curl -s --cacert nifi-certs/ca/ca.crt --cert nifi-certs/admin/admin.crt --key ni
 # expect: "CONNECTED" three times
 
 # 4. keystore content on a node
-keytool -list -v -keystore /opt/nifi/current/conf/keystore.p12 -storetype PKCS12 | grep -E 'Owner|Valid|DNSName|IPAddress'
+keytool -list -v -keystore /data/nifi/current/conf/keystore.p12 -storetype PKCS12 | grep -E 'Owner|Valid|DNSName|IPAddress'
 ```
 
 Settings for [`nifi-upgrade.sh`](../nifi-upgrade.sh) automation:
