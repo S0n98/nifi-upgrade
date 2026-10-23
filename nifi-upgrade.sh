@@ -25,7 +25,7 @@ CMD=${1:-}
 source "$CONF"
 
 : "${NODES:?}" "${OLD_VERSION:?}" "${NEW_VERSION:?}" "${NIFI_API_URL:?}"
-NIFI_BASE=${NIFI_BASE:-/data/nifi}; NIFI_LINK=${NIFI_LINK:-$NIFI_BASE/current}; SERVICE=${SERVICE:-nifi}
+NIFI_BASE=${NIFI_BASE:-/data/soft/nifi}; NIFI_LINK=${NIFI_LINK:-$NIFI_BASE/current}; SERVICE=${SERVICE:-nifi}
 BACKUP_DIR=${BACKUP_DIR:-/data/backups/nifi}; SSH_USER=${SSH_USER:-root}; SSH_OPTS=${SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=10}
 RUN_DIR=${RUN_DIR:-$HERE/runs/$(date +%Y%m%d)-$OLD_VERSION-to-$NEW_VERSION}
 mkdir -p "$RUN_DIR"

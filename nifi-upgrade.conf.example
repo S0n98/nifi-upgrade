@@ -16,8 +16,8 @@ DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each
 DIST_SHA512=5891039ccf15234bb21c2d1c...REPLACE_WITH_FULL_VALUE
 
 # ---- layout on the nodes (same as the tested single-node layout) --------------------------------
-NIFI_BASE=/data/nifi                  # contains nifi-<version>/ directories
-NIFI_LINK=/data/nifi/current          # systemd unit runs $NIFI_LINK/bin/nifi.sh run
+NIFI_BASE=/data/soft/nifi                  # contains nifi-<version>/ directories
+NIFI_LINK=/data/soft/nifi/current          # systemd unit runs $NIFI_LINK/bin/nifi.sh run
 SERVICE=nifi
 NIFI_USER=nifi
 MIN_FREE_GB=4

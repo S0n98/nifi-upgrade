@@ -17,105 +17,124 @@ For background on what each script step does, see [RUNBOOK.md](RUNBOOK.md). This
 
 ---
 
-## Phase 0 — Install layout under `/data` and the systemd unit
+## Phase 0 — Install layout under `/data/soft/nifi` and the systemd unit
 
-Do this once, before the upgrade project starts. The scripts and every later phase assume this layout.
+Do this once, before the upgrade project starts. The scripts and every later phase assume this layout. Today
+NiFi 2.0.0-M4 is installed in `/data/soft/nifi/nifi-2.0.0-M4`. Phase 0 adds `/data/soft/nifi/nifi-data` (all data)
+and `/data/soft/nifi/current` (the symlink the service runs from).
 
 ### 0.1 Target layout (same on every node)
 
 ```
-/data/nifi/                       install base            (NIFI_BASE in nifi-upgrade.conf)
-├── nifi-2.0.0-M4/                unpacked release
+/data/soft/nifi/                  install base                    (NIFI_BASE in nifi-upgrade.conf)
+├── nifi-2.0.0-M4/                current release (already there)
 ├── nifi-2.12.0/                  added by "stage"
-├── current -> nifi-2.0.0-M4      the active release      (NIFI_LINK) - "upgrade" switches it
-└── .staging/                     release zip during stage
-/data/nifi-data/                  everything that must survive an upgrade or rollback
-├── flow/                         flow.json.gz + archive/
-├── flowfile_repository/  content_repository/  provenance_repository/  database_repository/
-├── state/local/                  local component state
-├── auth/                         users.xml, authorizations.xml
-├── python-extensions/            custom Python processors
-├── work/python/                  pip-installed processor dependencies (reused across versions)
-├── logs/                         nifi-app.log, nifi-bootstrap.log, nifi-user.log  (set by the systemd unit)
-└── run/                          pid file                                          (set by the systemd unit)
+├── current -> nifi-2.0.0-M4      the active release              (NIFI_LINK) - "upgrade" switches it
+├── .staging/                     release zip during stage
+└── nifi-data/                    everything that must survive an upgrade or rollback
+    ├── flow/                     flow.json.gz + archive/
+    ├── flowfile_repository/  content_repository/  provenance_repository/  database_repository/
+    ├── state/local/              local component state
+    ├── auth/                     users.xml, authorizations.xml
+    ├── python-extensions/        custom Python processors
+    ├── work/python/              pip-installed processor dependencies (reused across versions)
+    ├── logs/                     nifi-app.log, nifi-bootstrap.log, nifi-user.log  (set by the systemd unit)
+    └── run/                      pid file                                          (set by the systemd unit)
 /data/backups/nifi/               BACKUP_DIR - better on another disk if you have one
 ```
 
 Nothing that holds data lives inside `nifi-<version>/`. That is what lets the upgrade switch only the symlink, and
-`preflight` fails otherwise. Keystores and truststores may stay in `conf/`, because `stage` copies them to the new
-version.
+`preflight` fails otherwise. `nifi-data/` sits next to the releases, not inside one, so it is never touched when a
+release is added, switched or removed. Keystores and truststores may stay in `conf/`, because `stage` copies them to
+the new version.
 
 ### 0.2 Paths in the NiFi configuration
 
-In `/data/nifi/current/conf/nifi.properties`:
+In `/data/soft/nifi/current/conf/nifi.properties`:
 
 ```properties
-nifi.flow.configuration.file=/data/nifi-data/flow/flow.json.gz
-nifi.flow.configuration.archive.dir=/data/nifi-data/flow/archive/
-nifi.database.directory=/data/nifi-data/database_repository
-nifi.flowfile.repository.directory=/data/nifi-data/flowfile_repository
-nifi.content.repository.directory.default=/data/nifi-data/content_repository
-nifi.provenance.repository.directory.default=/data/nifi-data/provenance_repository
-nifi.python.extensions.source.directory.default=/data/nifi-data/python-extensions
-nifi.python.working.directory=/data/nifi-data/work/python
+nifi.flow.configuration.file=/data/soft/nifi/nifi-data/flow/flow.json.gz
+nifi.flow.configuration.archive.dir=/data/soft/nifi/nifi-data/flow/archive/
+nifi.database.directory=/data/soft/nifi/nifi-data/database_repository
+nifi.flowfile.repository.directory=/data/soft/nifi/nifi-data/flowfile_repository
+nifi.content.repository.directory.default=/data/soft/nifi/nifi-data/content_repository
+nifi.provenance.repository.directory.default=/data/soft/nifi/nifi-data/provenance_repository
+nifi.python.extensions.source.directory.default=/data/soft/nifi/nifi-data/python-extensions
+nifi.python.working.directory=/data/soft/nifi/nifi-data/work/python
 ```
 
 In `conf/state-management.xml`, inside the `local-provider` block:
 
 ```xml
-<property name="Directory">/data/nifi-data/state/local</property>
+<property name="Directory">/data/soft/nifi/nifi-data/state/local</property>
 ```
 
 In `conf/authorizers.xml`, file-user-group-provider and file-access-policy-provider:
 
 ```xml
-<property name="Users File">/data/nifi-data/auth/users.xml</property>
-<property name="Authorizations File">/data/nifi-data/auth/authorizations.xml</property>
+<property name="Users File">/data/soft/nifi/nifi-data/auth/users.xml</property>
+<property name="Authorizations File">/data/soft/nifi/nifi-data/auth/authorizations.xml</property>
 ```
 
-### 0.3 Moving an existing M4 install to `/data` (one-time, short downtime)
+### 0.3 Move the data of the running M4 install into `nifi-data` (one-time, short downtime)
 
-Skip this if NiFi already runs from `/data/nifi/current` with data in `/data/nifi-data`. Otherwise do it as its own
-change, **before** the upgrade window, and check the cluster afterwards. The example assumes the old install is
-`/opt/nifi/nifi-2.0.0-M4` with data in `/opt/nifi/nifi-2.0.0-M4/*_repository` etc.; adapt the source paths.
+Do this as its own change, **before** the upgrade window, and check the cluster afterwards. The release directory
+stays where it is. Only the data moves out of it, which is instant on the same filesystem.
 
-1. Stop **all three** nodes (`sudo systemctl stop nifi`). Wait until `pgrep -u nifi -f org.apache.nifi` prints nothing.
-2. On every node, copy and keep the original until the cluster is verified:
+1. **Record the current paths** on every node. With default settings they are relative (`./...`), so they live
+   inside `/data/soft/nifi/nifi-2.0.0-M4`:
    ```bash
-   sudo mkdir -p /data/nifi /data/nifi-data/{flow,state,auth,work,logs,run} /data/backups/nifi
-   sudo rsync -aHAX /opt/nifi/nifi-2.0.0-M4/ /data/nifi/nifi-2.0.0-M4/
-   cd /data/nifi/nifi-2.0.0-M4
-   for d in flowfile_repository content_repository provenance_repository database_repository; do
-     [ -d "$d" ] && sudo mv "$d" /data/nifi-data/
-   done
-   sudo mv conf/flow.json.gz conf/archive /data/nifi-data/flow/ 2>/dev/null || true
-   sudo mv state/local /data/nifi-data/state/ 2>/dev/null || true
-   sudo mv conf/users.xml conf/authorizations.xml /data/nifi-data/auth/ 2>/dev/null || true
-   sudo mv python/extensions /data/nifi-data/python-extensions 2>/dev/null || sudo mkdir -p /data/nifi-data/python-extensions
-   sudo ln -sfn /data/nifi/nifi-2.0.0-M4 /data/nifi/current
-   sudo chown -R nifi:nifi /data/nifi /data/nifi-data /data/backups/nifi
+   cd /data/soft/nifi/nifi-2.0.0-M4
+   grep -E '^nifi\.(flow\.configuration\.(file|archive\.dir)|database\.directory|(flowfile|content|provenance)\.repository\.directory|python\.(extensions\.source\.directory\.default|working\.directory))' conf/nifi.properties
+   grep -E 'name="(Directory|Users File|Authorizations File)"' conf/state-management.xml conf/authorizers.xml
+   systemctl cat nifi | grep -E 'ExecStart|WorkingDirectory|User='
    ```
-   If your repositories were already somewhere else (absolute paths), move those directories instead.
-3. Edit the paths in 0.2 on every node.
-4. Install the systemd unit (0.5) and label for SELinux (0.4).
-5. Start **all three** nodes, then check that all are connected:
+   Any path that is already absolute and outside `nifi-2.0.0-M4` can stay where it is. Leave it out of step 3.
+2. **Stop all three nodes** (`sudo systemctl stop nifi`). Wait until `pgrep -u nifi -f org.apache.nifi` prints
+   nothing on each node.
+3. **On every node**, back up the config, then move the data:
+   ```bash
+   cd /data/soft/nifi/nifi-2.0.0-M4
+   sudo cp -a conf conf.bak-before-nifi-data
+   sudo cp -p /etc/systemd/system/nifi.service /etc/systemd/system/nifi.service.bak-before-nifi-data 2>/dev/null || true
+   N=/data/soft/nifi/nifi-data
+   sudo mkdir -p $N/{flow,state,auth,work,logs,run} /data/backups/nifi
+   for d in flowfile_repository content_repository provenance_repository database_repository; do
+     [ -d "$d" ] && sudo mv "$d" $N/
+   done
+   sudo mv conf/flow.json.gz $N/flow/ ; [ -d conf/archive ] && sudo mv conf/archive $N/flow/archive
+   [ -d state/local ] && sudo mv state/local $N/state/local
+   for f in users.xml authorizations.xml; do [ -f conf/$f ] && sudo mv conf/$f $N/auth/; done
+   if [ -d python/extensions ]; then sudo mv python/extensions $N/python-extensions; else sudo mkdir -p $N/python-extensions; fi
+   [ -d work/python ] && sudo mv work/python $N/work/python
+   sudo ln -sfn /data/soft/nifi/nifi-2.0.0-M4 /data/soft/nifi/current
+   sudo chown -R nifi:nifi /data/soft/nifi /data/backups/nifi
+   ```
+4. **Edit the paths** in 0.2 on every node. Edit `/data/soft/nifi/nifi-2.0.0-M4/conf/...`, which is the same as
+   `/data/soft/nifi/current/conf/...`.
+5. **Install the systemd unit** (0.5) and **label for SELinux** (0.4). The new unit runs `/data/soft/nifi/current`
+   and writes logs to `nifi-data/logs`. Old logs remain in `nifi-2.0.0-M4/logs`.
+6. **Start all three nodes**, then check that all are connected:
    ```bash
    curl -s --cacert ca.pem --cert admin.crt --key admin.key https://10.0.178.10:8443/nifi-api/controller/cluster | grep -o '"status":"[A-Z]*"'
    ```
-   Check also that queues show the same counts as before and `/data/nifi-data/logs/nifi-app.log` has no errors.
-   Only then remove `/opt/nifi/nifi-2.0.0-M4`.
+   Also check that queues show the same counts as before, and that `/data/soft/nifi/nifi-data/logs/nifi-app.log` has
+   no errors.
+
+**To undo** (before anything else changes): stop all nodes, move the directories back, restore
+`conf.bak-before-nifi-data` and the unit backup, then `systemctl daemon-reload` and start.
 
 ### 0.4 SELinux (RHEL 9, enforcing)
 
-Files created under `/data` get the generic label `default_t`. systemd will not execute `nifi.sh` with that label;
+Files under `/data` normally carry the generic label `default_t`. systemd will not execute `nifi.sh` with that label;
 `systemctl status nifi` then shows `status=203/EXEC` and the audit log has an AVC denial. Label the `bin/`
 directories of every release as executables. The rule also covers releases unpacked later, such as 2.12.0:
 
 ```bash
 sudo dnf list installed policycoreutils-python-utils   # provides semanage (normally present on RHEL 9 servers)
-sudo semanage fcontext -a -t bin_t '/data/nifi/nifi-[^/]+/bin(/.*)?'
-sudo restorecon -Rv /data/nifi
-ls -Z /data/nifi/current/bin/nifi.sh                   # expect ...:bin_t:...
+sudo semanage fcontext -a -t bin_t '/data/soft/nifi/nifi-[^/]+/bin(/.*)?'
+sudo restorecon -Rv /data/soft/nifi
+ls -Z /data/soft/nifi/current/bin/nifi.sh                   # expect ...:bin_t:...
 ```
 
 After starting NiFi, `sudo ausearch -m avc -ts recent` should show nothing for nifi. Check `getenforce` first; on
@@ -136,8 +155,8 @@ What the unit does:
 
 | Setting | Why |
 |---|---|
-| `ExecStart=/data/nifi/current/bin/nifi.sh run`, `WorkingDirectory=/data/nifi/current` | always runs the release the symlink points to, so the upgrade and rollback never touch the unit |
-| `NIFI_OVERRIDE_NIFIENV=true` + `NIFI_LOG_DIR` / `NIFI_PID_DIR` | logs and pid in `/data/nifi-data`, so they stay put when the release changes (2.0.0-M4 and 2.12.0 both honour this) |
+| `ExecStart=/data/soft/nifi/current/bin/nifi.sh run`, `WorkingDirectory=/data/soft/nifi/current` | always runs the release the symlink points to, so the upgrade and rollback never touch the unit |
+| `NIFI_OVERRIDE_NIFIENV=true` + `NIFI_LOG_DIR` / `NIFI_PID_DIR` | logs and pid in `/data/soft/nifi/nifi-data`, so they stay put when the release changes (2.0.0-M4 and 2.12.0 both honour this) |
 | `KillMode=mixed`, `TimeoutStopSec=600` | stop sends SIGTERM only to the bootstrap, which shuts NiFi down cleanly (repositories flushed); never a quick SIGKILL |
 | `Restart=on-failure`, `StartLimitBurst=5` in 15 min | restarts after a crash, but stops retrying on a persistent fault (full disk, bad config) instead of looping |
 | `LimitNOFILE=50000` | NiFi needs many open files (repositories, connections) |
@@ -152,7 +171,7 @@ What the unit does:
 
 ```bash
 ssh ops@10.0.178.10
-sudo zcat "$(sudo grep '^nifi.flow.configuration.file=' /data/nifi/current/conf/nifi.properties | cut -d= -f2-)" \
+sudo zcat "$(sudo grep '^nifi.flow.configuration.file=' /data/soft/nifi/current/conf/nifi.properties | cut -d= -f2-)" \
   | grep -c '"artifact":"python-extensions"'
 python3 --version
 ```
@@ -165,7 +184,7 @@ python3 --version
 ### 1.2 (Python only) Do your Python processors need extra packages?
 
 ```bash
-D=$(sudo grep '^nifi.python.extensions.source.directory.default=' /data/nifi/current/conf/nifi.properties | cut -d= -f2-)
+D=$(sudo grep '^nifi.python.extensions.source.directory.default=' /data/soft/nifi/current/conf/nifi.properties | cut -d= -f2-)
 sudo find "$D" -name requirements.txt                      # file-based dependencies
 sudo grep -rlE '^\s*dependencies\s*=' --include='*.py' "$D"  # inline dependencies in ProcessorDetails
 ```
@@ -177,8 +196,8 @@ nothing is found, NiFi needs no packages and you can skip the wheels.
 
 ```bash
 sudo grep -E '^nifi\.(web\.https\.(host|port)|cluster\.node\.address|zookeeper\.connect\.string|python\.(command|working\.directory))=' \
-  /data/nifi/current/conf/nifi.properties
-df -h /data /data/backups           # need >= 4 GB in /data/nifi, plus room for a full data backup
+  /data/soft/nifi/current/conf/nifi.properties
+df -h /data /data/backups           # need >= 4 GB in /data/soft/nifi, plus room for a full data backup
 command -v zstd || echo "no zstd -> use BACKUP_COMPRESS=gzip"
 ```
 
@@ -265,7 +284,7 @@ Then point NiFi at it. Edit the **current (M4)** config on every node. The upgra
 itself picks it up at its next restart and works with 3.12 as well:
 
 ```bash
-sudo sed -i 's/^#\?nifi.python.command=.*/nifi.python.command=python3.12/' /data/nifi/current/conf/nifi.properties
+sudo sed -i 's/^#\?nifi.python.command=.*/nifi.python.command=python3.12/' /data/soft/nifi/current/conf/nifi.properties
 ```
 
 ### 3.4 (Python processors with dependencies only) Local package source on every node
@@ -275,14 +294,14 @@ NiFi runs `pip install` for these processors the first time 2.12.0 starts, so pi
 ```bash
 for n in 10.0.178.10 10.0.178.11 10.0.178.12; do
   scp -r $B/wheels ops@$n:/tmp/wheels
-  ssh ops@$n 'sudo mkdir -p /data/nifi-wheels && sudo cp /tmp/wheels/*.whl /data/nifi-wheels/ && rm -rf /tmp/wheels &&
-              printf "[global]\nno-index = true\nfind-links = /data/nifi-wheels\n" | sudo tee /etc/pip.conf'
+  ssh ops@$n 'sudo mkdir -p /data/soft/nifi-wheels && sudo cp /tmp/wheels/*.whl /data/soft/nifi-wheels/ && rm -rf /tmp/wheels &&
+              printf "[global]\nno-index = true\nfind-links = /data/soft/nifi-wheels\n" | sudo tee /etc/pip.conf'
 done
 ```
 
 Also check `nifi.python.working.directory` from step 1.3. If it is relative (default `./work/python`), NiFi installs
 the dependencies again for the new version, which works with the local source above. If it points outside
-`/data/nifi`, the installed packages are reused.
+`/data/soft/nifi`, the installed packages are reused.
 
 ### 3.5 API credentials for the automation
 
@@ -321,8 +340,8 @@ DIST_URL=                                        # empty = offline
 DIST_ZIP=/srv/nifi-upgrade/nifi-offline-bundle-2.12.0/nifi/nifi-2.12.0-bin.zip
 DIST_SHA512=<value from nifi/DIST_SHA512>
 
-NIFI_BASE=/data/nifi
-NIFI_LINK=/data/nifi/current
+NIFI_BASE=/data/soft/nifi
+NIFI_LINK=/data/soft/nifi/current
 SERVICE=nifi
 NIFI_USER=nifi
 MIN_FREE_GB=4
@@ -358,7 +377,7 @@ On RHEL 9, look for these lines:
 | Line | Meaning / action |
 |---|---|
 | `ok java 21` | — |
-| `FAIL data path inside install dir` | move that directory out of `/data/nifi/nifi-2.0.0-M4` first (RUNBOOK §3 item 2) |
+| `FAIL data path inside install dir` | move that directory out of `/data/soft/nifi/nifi-2.0.0-M4` first (RUNBOOK §3 item 2) |
 | `INFO stage expects DIST_ZIP pushed from the admin host` | correct for offline |
 | `FAIL flow uses Python processors but nifi.python.command=... is Python 3.9` | do step 3.3 |
 | `WARN Python processors declare pip dependencies ...` | do step 3.4 |
@@ -371,14 +390,14 @@ On RHEL 9, look for these lines:
 ./nifi-upgrade.sh -c nifi-upgrade.conf stage
 ```
 
-This copies the zip to each node, verifies its SHA-512, unpacks `/data/nifi/nifi-2.12.0` and carries the
+This copies the zip to each node, verifies its SHA-512, unpacks `/data/soft/nifi/nifi-2.12.0` and carries the
 configuration over. The running cluster is not touched.
 
 ### 4.3 Review the per-node report
 
 ```bash
 for n in 10.0.178.10 10.0.178.11 10.0.178.12; do
-  echo "== $n"; ssh ops@$n 'grep -E "^(REVIEW|bootstrap)" /data/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt'
+  echo "== $n"; ssh ops@$n 'grep -E "^(REVIEW|bootstrap)" /data/soft/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt'
 done
 ```
 
@@ -393,7 +412,7 @@ Anything else needs a decision before the window.
 ### 4.4 SELinux (only if enforcing)
 
 ```bash
-for n in 10.0.178.10 10.0.178.11 10.0.178.12; do ssh ops@$n 'getenforce; sudo restorecon -R /data/nifi/nifi-2.12.0; ls -Z /data/nifi/nifi-2.12.0/bin/nifi.sh'; done
+for n in 10.0.178.10 10.0.178.11 10.0.178.12; do ssh ops@$n 'getenforce; sudo restorecon -R /data/soft/nifi/nifi-2.12.0; ls -Z /data/soft/nifi/nifi-2.12.0/bin/nifi.sh'; done
 ```
 
 With the `semanage` rule from 0.4, the new `bin/` gets `bin_t` like the old one. Without it, the switch in 5.2
@@ -412,7 +431,7 @@ Budget **30–60 minutes**. Steps 5.2–5.5 are downtime.
 | 5.2 | Upgrade (type `yes`) | `./nifi-upgrade.sh -c nifi-upgrade.conf upgrade` | ends with `VERIFY PASSED` |
 | 5.3 | Smoke test, everything still stopped | UI on each node: log in, open a few process groups, bulletins empty, list a queue | no errors |
 | 5.4 | Resume | `./nifi-upgrade.sh -c nifi-upgrade.conf resume` | `not running: none` |
-| 5.5 | Watch 15–30 min | throughput, queues, bulletins, heap, `/data/nifi-data/logs/nifi-app.log`, `df -h /data` | normal |
+| 5.5 | Watch 15–30 min | throughput, queues, bulletins, heap, `/data/soft/nifi/nifi-data/logs/nifi-app.log`, `df -h /data` | normal |
 | 5.6 | Finalize | `./nifi-upgrade.sh -c nifi-upgrade.conf finalize` | `finalize ok` ×3 |
 
 What 5.2 prints, in order:
@@ -444,7 +463,7 @@ If 5.2 ends with **VERIFY FAILED**, nothing has been restarted. Read the `FAIL` 
 3. **NiFi Registry → GitLab** (optional, no downtime, any time later): [RUNBOOK.md §6](RUNBOOK.md#6-nifi-registry-200-m4--gitlab-flow-registry-client-after-the-upgrade-no-downtime).
    It needs only internal network access to GitLab.
 4. **Clean up after 1–2 weeks** of stable running, on each node:
-   `sudo rm -rf /data/nifi/nifi-2.0.0-M4 /data/nifi/.staging` and old backups in `/data/backups/nifi`. Keep the
+   `sudo rm -rf /data/soft/nifi/nifi-2.0.0-M4 /data/soft/nifi/.staging` and old backups in `/data/backups/nifi`. Keep the
    bundle tarball until then.
 
 ## Phase 7 — Rollback
@@ -471,8 +490,8 @@ Not undone by a rollback: data already delivered by 2.12, and commits already pu
 | `runs/<date>-2.0.0-M4-to-2.12.0/upgrade.log` | everything the orchestrator did |
 | `runs/.../<node>.<step>.log` | node-side output of each step |
 | `runs/.../baseline.json`, `baseline.post.json` | what was recorded before and found after |
-| node: `/data/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt` | configuration carry-over report |
-| node: `/data/nifi-data/logs/nifi-app.log`, `nifi-bootstrap.log` | NiFi startup, Python, cluster join |
+| node: `/data/soft/nifi/upgrade-report-2.0.0-M4-to-2.12.0.txt` | configuration carry-over report |
+| node: `/data/soft/nifi/nifi-data/logs/nifi-app.log`, `nifi-bootstrap.log` | NiFi startup, Python, cluster join |
 | node: `journalctl -u nifi` | service start/stop, JVM errors |
 | node: `df -h` | a full disk stops NiFi — keep ≥ 20 % free on data and log filesystems |
 
