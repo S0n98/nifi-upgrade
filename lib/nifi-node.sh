@@ -21,6 +21,20 @@ prop() { # prop FILE KEY -> value of KEY in a .properties file
 abspath() { # resolve a NiFi path (relative paths are relative to NIFI_HOME)
   case "$2" in /*) echo "$2" ;; *) echo "$1/${2#./}" ;; esac
 }
+relink() { # point NIFI_LINK at $1; a new symlink inherits its directory's label (default_t), which systemd may not read
+  ln -sfn "$1" "$NIFI_LINK"
+  command -v restorecon >/dev/null && restorecon "$NIFI_LINK" 2>/dev/null || true
+}
+selinux_check() { # under enforcing SELinux, systemd (init_t) must be able to read the symlink and execute nifi.sh
+  [ "$(getenforce 2>/dev/null)" = Enforcing ] || { log "ok   SELinux not enforcing"; return 0; }
+  local f t rc=0 h
+  for f in "$NIFI_LINK" $(for h in "$@"; do echo "$h/bin/nifi.sh"; done); do
+    t=$(stat -c %C "$f" 2>/dev/null | cut -d: -f3)   # stat does not follow the symlink: this is the link's own label
+    [ "$t" = bin_t ] && log "ok   SELinux $f is bin_t" \
+      || { log "FAIL SELinux $f is ${t:-unlabeled} - systemd will fail with 203/EXEC; see UPGRADE-GUIDE-RHEL9.md 0.4"; rc=1; }
+  done
+  return $rc
+}
 
 # ---------------------------------------------------------------- data locations (from the OLD configuration)
 data_paths() { # prints one absolute path per line: everything that holds state or data
@@ -55,6 +69,7 @@ cmd_preflight() {
   [ "$(readlink -f "$NIFI_LINK")" = "$(readlink -f "$OLD_HOME")" ] || { log "FAIL $NIFI_LINK does not point to $OLD_HOME"; rc=1; }
   [ -f "$OLD_HOME/conf/nifi.properties" ] || { log "FAIL missing $OLD_HOME/conf/nifi.properties"; rc=1; }
   systemctl cat "$SERVICE" >/dev/null 2>&1 || { log "FAIL systemd unit $SERVICE not found"; rc=1; }
+  selinux_check "$OLD_HOME" || rc=1
   local jv; jv=$(sudo -u "$NIFI_USER" bash -c 'java -version 2>&1' | awk -F'"' '/version/ {print $2}' | cut -d. -f1)
   [ "${jv:-0}" -ge 21 ] && log "ok   java $jv" || { log "FAIL java 21+ required (found '${jv:-none}')"; rc=1; }
   command -v python3 >/dev/null || { log "FAIL python3 required on node"; rc=1; }
@@ -286,8 +301,9 @@ cmd_switch() {
   systemctl is-active --quiet "$SERVICE" && die "$SERVICE is running"
   # first start of the new version comes up with every component stopped; nifi-upgrade.sh resumes them after verification
   set_prop "$NEW_HOME/conf/nifi.properties" nifi.flowcontroller.autoResumeState false
-  ln -sfn "$NEW_HOME" "$NIFI_LINK"
+  relink "$NEW_HOME"
   systemctl daemon-reload
+  selinux_check "$NEW_HOME" || die "fix the SELinux labels, then re-run switch"
   log "$NIFI_LINK -> $(readlink "$NIFI_LINK") (autoResumeState=false for first start)"
 }
 
@@ -312,7 +328,7 @@ cmd_rollback() {
     [ -e "$d" ] && mv "$d" "$d.failed-$NEW_VERSION-$ts" && log "moved aside $d"
   done
   case "$f" in *.gz) tar -xzf "$f" -C / ;; *.zst) tar --zstd -xf "$f" -C / ;; *) tar -xf "$f" -C / ;; esac
-  ln -sfn "$OLD_HOME" "$NIFI_LINK"; systemctl daemon-reload
+  relink "$OLD_HOME"; systemctl daemon-reload
   log "restored $f, $NIFI_LINK -> $OLD_HOME"
   [ "${ROLLBACK_START:-yes}" = yes ] && cmd_start
 }

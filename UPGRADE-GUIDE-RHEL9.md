@@ -107,7 +107,7 @@ stays where it is. Only the data moves out of it, which is instant on the same f
    for f in users.xml authorizations.xml; do [ -f conf/$f ] && sudo mv conf/$f $N/auth/; done
    if [ -d python/extensions ]; then sudo mv python/extensions $N/python-extensions; else sudo mkdir -p $N/python-extensions; fi
    [ -d work/python ] && sudo mv work/python $N/work/python
-   sudo ln -sfn /data/soft/nifi/nifi-2.0.0-M4 /data/soft/nifi/current
+   sudo ln -sfn /data/soft/nifi/nifi-2.0.0-M4 /data/soft/nifi/current   # label it in 0.4 before starting NiFi
    sudo chown -R nifi:nifi /data/soft/nifi /data/backups/nifi
    ```
 4. **Edit the paths** in 0.2 on every node. Edit `/data/soft/nifi/nifi-2.0.0-M4/conf/...`, which is the same as
@@ -126,19 +126,30 @@ stays where it is. Only the data moves out of it, which is instant on the same f
 
 ### 0.4 SELinux (RHEL 9, enforcing)
 
-Files under `/data` normally carry the generic label `default_t`. systemd will not execute `nifi.sh` with that label;
-`systemctl status nifi` then shows `status=203/EXEC` and the audit log has an AVC denial. Label the `bin/`
-directories of every release as executables. The rule also covers releases unpacked later, such as 2.12.0:
+Files under `/data` normally carry the generic label `default_t` (or `unlabeled_t`). systemd (`init_t`) may neither
+**read the `current` symlink** nor **execute `nifi.sh`** with those labels. `systemctl status nifi` then shows
+`status=203/EXEC` with `Failed to locate executable /data/soft/nifi/current/bin/nifi.sh: Permission denied`, and the
+audit log has an AVC such as `denied { read } ... name="current" ... tcontext=...default_t... tclass=lnk_file`.
+
+Label both: the `bin/` directories of every release (the rule also covers releases unpacked later, such as 2.12.0) and
+the `current` symlink itself:
 
 ```bash
 sudo dnf list installed policycoreutils-python-utils   # provides semanage (normally present on RHEL 9 servers)
 sudo semanage fcontext -a -t bin_t '/data/soft/nifi/nifi-[^/]+/bin(/.*)?'
+sudo semanage fcontext -a -f l -t bin_t '/data/soft/nifi/current'
 sudo restorecon -Rv /data/soft/nifi
 ls -Z /data/soft/nifi/current/bin/nifi.sh                   # expect ...:bin_t:...
+ls -dZ /data/soft/nifi/current                              # the link itself: expect ...:bin_t:...
 ```
 
-After starting NiFi, `sudo ausearch -m avc -ts recent` should show nothing for nifi. Check `getenforce` first; on
-`Permissive` or `Disabled` nodes this step changes nothing.
+A symlink created later (`ln -sfn`) gets its directory's label again, not the rule's, so run
+`sudo restorecon /data/soft/nifi/current` after every manual re-link. `nifi-upgrade.sh` does this itself on `switch`
+and `rollback`, and its `preflight` fails when either label is wrong.
+
+After starting NiFi, `sudo ausearch -m avc,user_avc -ts recent` should show nothing. Don't filter it with
+`grep nifi`: a denial on the symlink only says `name="current"`. Check `getenforce` first; on `Permissive` or
+`Disabled` nodes this step changes nothing.
 
 ### 0.5 Install the systemd unit
 
@@ -412,7 +423,7 @@ Anything else needs a decision before the window.
 ### 4.4 SELinux (only if enforcing)
 
 ```bash
-for n in 10.0.178.10 10.0.178.11 10.0.178.12; do ssh ops@$n 'getenforce; sudo restorecon -R /data/soft/nifi/nifi-2.12.0; ls -Z /data/soft/nifi/nifi-2.12.0/bin/nifi.sh'; done
+for n in 10.0.178.10 10.0.178.11 10.0.178.12; do ssh ops@$n 'getenforce; sudo restorecon -R /data/soft/nifi/nifi-2.12.0; ls -Z /data/soft/nifi/nifi-2.12.0/bin/nifi.sh; ls -dZ /data/soft/nifi/current'; done
 ```
 
 With the `semanage` rule from 0.4, the new `bin/` gets `bin_t` like the old one. Without it, the switch in 5.2
