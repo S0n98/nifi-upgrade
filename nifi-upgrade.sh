@@ -24,6 +24,9 @@ while getopts "c:yz:" o; do case $o in c) CONF=$OPTARG ;; y) YES=yes ;; z) ZIP_A
 shift $((OPTIND - 1))
 CMD=${1:-}
 [ -n "$CONF" ] && [ -f "$CONF" ] || { sed -n '2,19p' "$0"; exit 2; }
+# Windows line endings (CRLF) break bash with errors like "set: pipefail\r: invalid option name"
+CRLF=$(grep -lI $'\r' "$CONF" "$HERE"/lib/*.sh "$HERE"/lib/*.py 2>/dev/null || true)
+[ -z "$CRLF" ] || { printf 'ERROR: Windows line endings (CRLF) in:\n%s\nfix with: sed -i '"'"'s/\\r$//'"'"' <files>\n' "$CRLF"; exit 1; }
 # shellcheck disable=SC1090
 source "$CONF"
 [ -n "$ZIP_ARG" ] && DIST_ZIP=$ZIP_ARG

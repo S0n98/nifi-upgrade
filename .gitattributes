@@ -1,0 +1,7 @@
+# scripts and configs run on Linux: keep LF even when cloned on Windows (core.autocrlf=true)
+*.sh       text eol=lf
+*.py       text eol=lf
+*.conf     text eol=lf
+*.example  text eol=lf
+*.service  text eol=lf
+*.md       text eol=lf
