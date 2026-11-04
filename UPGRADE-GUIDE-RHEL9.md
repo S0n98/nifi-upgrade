@@ -171,7 +171,17 @@ What the unit does:
 | `NIFI_OVERRIDE_NIFIENV=true` + `NIFI_LOG_DIR` / `NIFI_PID_DIR` | logs and pid in `/data/soft/nifi/nifi-data`, so they stay put when the release changes (2.0.0-M4 and 2.12.0 both honour this) |
 | `KillMode=mixed`, `TimeoutStopSec=600` | stop sends SIGTERM only to the bootstrap, which shuts NiFi down cleanly (repositories flushed); never a quick SIGKILL |
 | `Restart=on-failure`, `StartLimitBurst=5` in 15 min | restarts after a crash, but stops retrying on a persistent fault (full disk, bad config) instead of looping |
-| `LimitNOFILE=50000` | NiFi needs many open files (repositories, connections) |
+| `LimitNOFILE=1048576`, `LimitNPROC=65536`, `TasksMax=infinity` | systemd ignores `/etc/security/limits.conf`. NiFi needs many open files, and `LimitNPROC` counts every **thread** of the nifi user. Too low a value makes 2.12.0 fail at startup with `OutOfMemoryError: unable to create native thread`, especially when load-balanced queues hold data |
+
+Also raise the kernel's memory-map limit on every node (each Java thread uses mappings):
+
+```bash
+echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/90-nifi.conf && sudo sysctl --system >/dev/null
+```
+
+Nodes that already run an older copy of the unit can get the new limits from a drop-in instead of a new unit file:
+`/etc/systemd/system/nifi.service.d/limits.conf` with a `[Service]` section and the three lines above, then
+`sudo systemctl daemon-reload` and a restart.
 
 `nifi-upgrade.sh` includes the unit file in its backups and does not change it.
 

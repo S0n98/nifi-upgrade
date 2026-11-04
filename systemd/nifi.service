@@ -42,8 +42,12 @@ SuccessExitStatus=143
 Restart=on-failure
 RestartSec=30
 
-LimitNOFILE=50000
-LimitNPROC=10000
+# systemd ignores /etc/security/limits.conf, so set the limits here. NPROC counts every THREAD of the nifi user;
+# too low a value fails at startup with "OutOfMemoryError: unable to create native thread" (e.g. when many
+# load-balanced queues hold data). Also set vm.max_map_count=262144 (sysctl) on the node.
+LimitNOFILE=1048576
+LimitNPROC=65536
+TasksMax=infinity
 
 [Install]
 WantedBy=multi-user.target

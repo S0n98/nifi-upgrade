@@ -70,6 +70,14 @@ cmd_preflight() {
   [ -f "$OLD_HOME/conf/nifi.properties" ] || { log "FAIL missing $OLD_HOME/conf/nifi.properties"; rc=1; }
   systemctl cat "$SERVICE" >/dev/null 2>&1 || { log "FAIL systemd unit $SERVICE not found"; rc=1; }
   selinux_check "$OLD_HOME" || rc=1
+  # systemd ignores limits.conf; NPROC counts threads - too low fails startup with "unable to create native thread"
+  local np nf mm
+  np=$(systemctl show -p LimitNPROC --value "$SERVICE" 2>/dev/null); nf=$(systemctl show -p LimitNOFILE --value "$SERVICE" 2>/dev/null)
+  mm=$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)
+  { [ "$np" = infinity ] || [ "${np:-0}" -ge 65536 ]; } && log "ok   LimitNPROC=$np" \
+    || log "WARN $SERVICE LimitNPROC=${np:-unset} (< 65536): risk of 'unable to create native thread' - see systemd/nifi.service"
+  { [ "$nf" = infinity ] || [ "${nf:-0}" -ge 50000 ]; } && log "ok   LimitNOFILE=$nf" || log "WARN $SERVICE LimitNOFILE=${nf:-unset} (< 50000)"
+  [ "$mm" -ge 262144 ] && log "ok   vm.max_map_count=$mm" || log "WARN vm.max_map_count=$mm (< 262144) - set it in /etc/sysctl.d/90-nifi.conf"
   # check the java NiFi really runs with: nifi.sh uses JAVA_HOME (systemd unit, else nifi-env.sh), and only falls back
   # to `java` on PATH - which may be an older system default (e.g. Java 11) that NiFi never uses
   local jh java src jv
