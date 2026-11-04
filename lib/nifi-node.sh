@@ -70,8 +70,16 @@ cmd_preflight() {
   [ -f "$OLD_HOME/conf/nifi.properties" ] || { log "FAIL missing $OLD_HOME/conf/nifi.properties"; rc=1; }
   systemctl cat "$SERVICE" >/dev/null 2>&1 || { log "FAIL systemd unit $SERVICE not found"; rc=1; }
   selinux_check "$OLD_HOME" || rc=1
-  local jv; jv=$(sudo -u "$NIFI_USER" bash -c 'java -version 2>&1' | awk -F'"' '/version/ {print $2}' | cut -d. -f1)
-  [ "${jv:-0}" -ge 21 ] && log "ok   java $jv" || { log "FAIL java 21+ required (found '${jv:-none}')"; rc=1; }
+  # check the java NiFi really runs with: nifi.sh uses JAVA_HOME (systemd unit, else nifi-env.sh), and only falls back
+  # to `java` on PATH - which may be an older system default (e.g. Java 11) that NiFi never uses
+  local jh java src jv
+  jh=$(systemctl show -p Environment "$SERVICE" 2>/dev/null | tr ' ' '\n' | sed -n 's/^\(Environment=\)\?JAVA_HOME=//p' | tail -1)
+  src="systemd unit"
+  [ -n "$jh" ] || { jh=$(sed -n 's/^[[:space:]]*export[[:space:]]\+JAVA_HOME=["'"'"']\?\([^"'"'"']*\).*/\1/p' "$OLD_HOME/bin/nifi-env.sh" 2>/dev/null | tail -1); src="nifi-env.sh"; }
+  if [ -n "$jh" ]; then java="$jh/bin/java"; else java=java; src="PATH (no JAVA_HOME set)"; fi
+  jv=$(sudo -u "$NIFI_USER" "$java" -version 2>&1 | awk -F'"' '/version/ {print $2}' | cut -d. -f1)
+  [ "${jv:-0}" -ge 21 ] && log "ok   java $jv ($java, from $src)" \
+    || { log "FAIL java 21+ required: $java (from $src) is '${jv:-not runnable}' - set JAVA_HOME in the $SERVICE unit"; rc=1; }
   command -v python3 >/dev/null || { log "FAIL python3 required on node"; rc=1; }
   command -v unzip >/dev/null || { log "FAIL unzip required on node"; rc=1; }
   local free; free=$(df -BG --output=avail "$NIFI_BASE" | tail -1 | tr -dc 0-9)

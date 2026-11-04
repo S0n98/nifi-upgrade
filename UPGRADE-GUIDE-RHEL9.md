@@ -157,7 +157,8 @@ Use [`systemd/nifi.service`](systemd/nifi.service) from this repository:
 
 ```bash
 sudo cp systemd/nifi.service /etc/systemd/system/nifi.service
-readlink -f "$(command -v java)"      # adjust JAVA_HOME in the unit if Java 21 lives elsewhere
+ls -d /usr/lib/jvm/*21*               # adjust JAVA_HOME in the unit if Java 21 lives elsewhere
+                                      # (don't trust `java -version`: the system default may be another version)
 sudo systemctl daemon-reload
 sudo systemctl enable nifi
 ```
@@ -294,9 +295,15 @@ From here on, `B=/srv/nifi-upgrade/nifi-offline-bundle-2.12.0`.
 
 ```bash
 for n in 10.0.178.10 10.0.178.11 10.0.178.12; do
-  echo "== $n"; ssh -o BatchMode=yes ops@$n 'sudo -n true && sudo -u nifi java -version 2>&1 | head -1'
+  echo "== $n"; ssh -o BatchMode=yes ops@$n 'sudo -n true &&
+    J=$(systemctl show -p Environment nifi | grep -o "JAVA_HOME=[^ ]*" | cut -d= -f2) &&
+    echo "JAVA_HOME=$J" && sudo -u nifi "$J/bin/java" -version 2>&1 | head -1'
 done
 ```
+
+This checks the Java that the `nifi` service uses (`JAVA_HOME` in the unit), not the system default. A plain
+`sudo -u nifi java -version` may print an older version, such as 11, if that is the system default. That's harmless
+as long as the unit's `JAVA_HOME` points to Java 21.
 
 Every node must print a `21.x` version. The scripts need passwordless sudo, which `sudo -n true` checks.
 
