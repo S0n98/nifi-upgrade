@@ -42,21 +42,35 @@ class HTTPFail(RuntimeError):
         super().__init__(msg); self.code = code
 
 
+# answers NiFi gives while it is still starting (loading the flow, electing the cluster flow, waiting for a
+# coordinator): retry them instead of failing - they are not errors in the request
+NOT_READY = ('initializing', 'cluster is still in the process', 'no cluster coordinator', 'not currently connected',
+             'cluster coordinator', 'is disconnected', 'flow election')
+
+
+def not_ready(code, text):
+    return code == 503 or (code == 409 and any(m in text.lower() for m in NOT_READY))
+
+
 def call(method, path, body=None, retry=True):
     h = {'Content-Type': 'application/json'} if body is not None else {}
-    t = token()
-    if t:
-        h['Authorization'] = 'Bearer ' + t
-    req = urllib.request.Request(API + path, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
-    try:
-        with urllib.request.urlopen(req, context=CTX, timeout=120) as r:
-            s = r.read().decode()
-            return json.loads(s) if s.strip().startswith(('{', '[')) else s
-    except urllib.error.HTTPError as e:
-        if e.code == 401 and retry and os.environ.get('NIFI_TOKEN_CMD'):
-            token(refresh=True)
-            return call(method, path, body, retry=False)
-        raise HTTPFail(e.code, '%s %s -> %s %s' % (method, path, e.code, e.read().decode()[:500]))
+    deadline = time.time() + int(os.environ.get('READY_TIMEOUT', '600'))
+    while True:
+        t = token()
+        if t:
+            h['Authorization'] = 'Bearer ' + t
+        req = urllib.request.Request(API + path, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with urllib.request.urlopen(req, context=CTX, timeout=120) as r:
+                s = r.read().decode()
+                return json.loads(s) if s.strip().startswith(('{', '[')) else s
+        except urllib.error.HTTPError as e:
+            text = e.read().decode(errors='replace')[:500]
+            if e.code == 401 and retry and os.environ.get('NIFI_TOKEN_CMD'):
+                token(refresh=True); retry = False; continue
+            if not_ready(e.code, text) and time.time() < deadline:
+                log('NiFi not ready (%s %s), retrying: %s' % (method, path, text[:100])); time.sleep(10); continue
+            raise HTTPFail(e.code, '%s %s -> %s %s' % (method, path, e.code, text))
 
 
 def log(*a):
@@ -76,7 +90,9 @@ def cluster_nodes():
     try:
         return [{'address': n['address'], 'status': n['status']} for n in call('GET', '/controller/cluster')['cluster']['nodes']]
     except HTTPFail as e:
-        if e.code in (404, 409):  # standalone instance ("Only a node connected to a cluster...")
+        # standalone instance: 404, or 409 "Only a node connected to a cluster can process the request".
+        # Any other 409 (e.g. "initializing the Data Flow") means a cluster node that is not ready yet.
+        if e.code == 404 or (e.code == 409 and 'only a node connected to a cluster' in str(e).lower()):
             return None
         raise
 
@@ -164,11 +180,17 @@ def cmd_wait_up(expected):
             call('GET', '/flow/about')
             nodes = cluster_nodes()
             if nodes is None:
-                log('API up (standalone)'); return
-            conn = [n for n in nodes if n['status'] == 'CONNECTED']
-            log('cluster: %d/%s nodes connected' % (len(conn), expected))
-            if expected and len(conn) >= int(expected):
-                return
+                if expected:  # told to expect a cluster: a "standalone" answer only means it isn't formed yet
+                    log('waiting for cluster: node answers as standalone, expecting %s nodes' % expected)
+                else:
+                    call('GET', '/flow/process-groups/root')  # flow loaded, not just the web server up
+                    log('API up (standalone)'); return
+            else:
+                conn = [n for n in nodes if n['status'] == 'CONNECTED']
+                log('cluster: %d/%s nodes connected' % (len(conn), expected))
+                if (expected and len(conn) >= int(expected)) or (not expected and conn and len(conn) == len(nodes)):
+                    call('GET', '/flow/process-groups/root')
+                    return
         except Exception as e:
             log('waiting for API: %s' % str(e)[:120])
         time.sleep(15)
