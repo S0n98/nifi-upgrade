@@ -11,18 +11,22 @@
 #   nifi-upgrade.sh -c nifi-upgrade.conf status       per-node link / service state
 #   nifi-upgrade.sh -c nifi-upgrade.conf all          preflight + stage + upgrade + resume + finalize (asks before downtime)
 #
-# Options: -y  do not ask for confirmation before downtime steps
+# Options: -y      do not ask for confirmation before downtime steps
+#          -z ZIP  release zip already downloaded to this admin host (overrides DIST_ZIP); copied to every node by stage.
+#                  SHA-512 comes from DIST_SHA512, else from ZIP.sha512 next to it, else is computed from the zip itself.
+#                  Without -z/DIST_ZIP/DIST_URL, ./nifi-<NEW_VERSION>-bin.zip (here or in the current dir) is used.
 # NiFi 2.0.0-M4 and 2.12.0 nodes cannot be mixed in one cluster, so the upgrade stops ALL nodes together (no rolling upgrade).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF="" ; YES=no
-while getopts "c:y" o; do case $o in c) CONF=$OPTARG ;; y) YES=yes ;; *) exit 2 ;; esac; done
+CONF="" ; YES=no ; ZIP_ARG=""
+while getopts "c:yz:" o; do case $o in c) CONF=$OPTARG ;; y) YES=yes ;; z) ZIP_ARG=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 CMD=${1:-}
-[ -n "$CONF" ] && [ -f "$CONF" ] || { sed -n '2,15p' "$0"; exit 2; }
+[ -n "$CONF" ] && [ -f "$CONF" ] || { sed -n '2,19p' "$0"; exit 2; }
 # shellcheck disable=SC1090
 source "$CONF"
+[ -n "$ZIP_ARG" ] && DIST_ZIP=$ZIP_ARG
 
 : "${NODES:?}" "${OLD_VERSION:?}" "${NEW_VERSION:?}" "${NIFI_API_URL:?}"
 NIFI_BASE=${NIFI_BASE:-/data/soft/nifi}; NIFI_LINK=${NIFI_LINK:-$NIFI_BASE/current}; SERVICE=${SERVICE:-nifi}
@@ -50,20 +54,62 @@ agent_env() { # environment passed to the node agent
   return 0
 }
 
+resolve_dist() { # decide where the release zip comes from; with a local zip, nodes never download anything
+  if [ -z "${DIST_ZIP:-}" ] && [ -z "${DIST_URL:-}" ]; then
+    local c; for c in "$HERE/nifi-$NEW_VERSION-bin.zip" "$PWD/nifi-$NEW_VERSION-bin.zip"; do
+      [ -f "$c" ] && { DIST_ZIP=$c; break; }
+    done
+    [ -n "${DIST_ZIP:-}" ] || die "no release zip: use -z /path/nifi-$NEW_VERSION-bin.zip (or set DIST_ZIP or DIST_URL in $CONF)"
+  fi
+  if [ -z "${DIST_ZIP:-}" ]; then  # online: every node downloads DIST_URL and checks it against DIST_SHA512
+    [ -n "${DIST_SHA512:-}" ] || die "DIST_SHA512 not set in $CONF (needed to check the DIST_URL download)"
+    log "release: nodes download $DIST_URL"
+    return 0
+  fi
+  DIST_ZIP=$(readlink -f "$DIST_ZIP"); DIST_URL=""
+  [ -r "$DIST_ZIP" ] || die "cannot read $DIST_ZIP"
+  python3 - "$DIST_ZIP" "nifi-$NEW_VERSION/bin/nifi.sh" <<'EOF' || die "$DIST_ZIP is not a NiFi $NEW_VERSION release zip"
+import sys, zipfile
+sys.exit(0 if sys.argv[2] in zipfile.ZipFile(sys.argv[1]).namelist() else 1)
+EOF
+  local file_sha="" sum
+  [ -f "$DIST_ZIP.sha512" ] && file_sha=$(awk '{print $1; exit}' "$DIST_ZIP.sha512")
+  if [ -n "${DIST_SHA512:-}" ] || [ -n "$file_sha" ]; then
+    local want=${DIST_SHA512:-$file_sha}
+    log "checking SHA-512 of $DIST_ZIP"
+    echo "$want  $DIST_ZIP" | sha512sum -c --quiet - || die "SHA-512 mismatch for $DIST_ZIP"
+    log "release: $DIST_ZIP (SHA-512 matches ${DIST_SHA512:+DIST_SHA512}${DIST_SHA512:-$DIST_ZIP.sha512})"
+    DIST_SHA512=$want
+  else
+    log "computing SHA-512 of $DIST_ZIP (no DIST_SHA512 / .sha512 given: trusting the operator's own check)"
+    sum=$(sha512sum "$DIST_ZIP"); DIST_SHA512=${sum%% *}
+    log "release: $DIST_ZIP sha512=${DIST_SHA512:0:16}... (nodes re-check it after the copy)"
+  fi
+}
+
+push_zip() { # push_zip NODE -> copy DIST_ZIP into the node's STAGE_DIR unless an identical file is already there
+  local node=$1 dir=${STAGE_DIR:-$NIFI_BASE/.staging} dst
+  dst="$dir/nifi-$NEW_VERSION-bin.zip"
+  if [ "$node" = local ]; then
+    mkdir -p "$dir"
+    [ "$(sha512sum "$dst" 2>/dev/null | cut -d' ' -f1)" = "$DIST_SHA512" ] && { echo "release zip already in $dir"; return 0; }
+    cp "$DIST_ZIP" "$dst.part" && mv "$dst.part" "$dst"
+  else
+    ssh $SSH_OPTS "$SSH_USER@$node" "sudo mkdir -p $dir && sudo chown $SSH_USER $dir"
+    [ "$(ssh $SSH_OPTS "$SSH_USER@$node" "sha512sum $dst 2>/dev/null" | cut -d' ' -f1)" = "$DIST_SHA512" ] \
+      && { echo "release zip already in $dir"; return 0; }
+    echo "copying $(du -h "$DIST_ZIP" | cut -f1) release zip to $node:$dir"
+    scp $SSH_OPTS -q "$DIST_ZIP" "$SSH_USER@$node:$dst.part" && ssh $SSH_OPTS "$SSH_USER@$node" "mv $dst.part $dst"
+  fi
+}
+
 on_node() { # on_node NODE SUBCOMMAND  -> runs the agent on that node, output to RUN_DIR/NODE.log
   local node=$1 sub=$2 env; env=$(agent_env)
+  if [ -n "${DIST_ZIP:-}" ] && [ "$sub" = stage ]; then push_zip "$node" || return 1; fi
   if [ "$node" = local ]; then
-    if [ -n "${DIST_ZIP:-}" ] && [ "$sub" = stage ]; then  # offline: use the zip the operator provided
-      mkdir -p "${STAGE_DIR:-$NIFI_BASE/.staging}"
-      cp "$DIST_ZIP" "${STAGE_DIR:-$NIFI_BASE/.staging}/nifi-$NEW_VERSION-bin.zip"
-    fi
     eval "env $env bash \"\$HERE/lib/nifi-node.sh\" \"\$sub\""
   else
     scp $SSH_OPTS -q "$HERE/lib/nifi-node.sh" "$SSH_USER@$node:$REMOTE_AGENT"
-    if [ -n "${DIST_ZIP:-}" ] && [ "$sub" = stage ]; then
-      ssh $SSH_OPTS "$SSH_USER@$node" "sudo mkdir -p ${STAGE_DIR:-$NIFI_BASE/.staging} && sudo chown $SSH_USER ${STAGE_DIR:-$NIFI_BASE/.staging}"
-      scp $SSH_OPTS -q "$DIST_ZIP" "$SSH_USER@$node:${STAGE_DIR:-$NIFI_BASE/.staging}/nifi-$NEW_VERSION-bin.zip"
-    fi
     ssh $SSH_OPTS "$SSH_USER@$node" "sudo env $env bash $REMOTE_AGENT $sub"
   fi
 }
@@ -84,7 +130,7 @@ all_nodes() { # all_nodes SUBCOMMAND -> run on every node in parallel, fail if a
 step_preflight() {
   log "== PREFLIGHT ($OLD_VERSION -> $NEW_VERSION) on ${#NODE_LIST[@]} node(s): $NODES"
   command -v python3 >/dev/null || die "python3 needed on admin host"
-  [ -n "${DIST_SHA512:-}" ] || die "DIST_SHA512 not set in $CONF"
+  resolve_dist
   all_nodes preflight || die "preflight failed on at least one node"
   api record "$RUN_DIR/preflight-inventory.json" || die "cannot read cluster inventory through the API"
   python3 - "$RUN_DIR/preflight-inventory.json" "${#NODE_LIST[@]}" <<'EOF' || die "cluster not healthy"
@@ -102,6 +148,7 @@ EOF
 
 step_stage() {
   log "== STAGE $NEW_VERSION (no downtime)"
+  [ "${DIST_RESOLVED:-}" = yes ] || resolve_dist
   all_nodes stage || die "stage failed"
   log "review the per-node reports: $NIFI_BASE/upgrade-report-$OLD_VERSION-to-$NEW_VERSION.txt (REVIEW lines need a human)"
 }
@@ -168,7 +215,7 @@ case "$CMD" in
   finalize) step_finalize ;;
   rollback) step_rollback ;;
   status) all_nodes status ;;
-  all) step_preflight; step_stage; step_upgrade; step_resume; step_finalize ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  all) step_preflight; DIST_RESOLVED=yes; step_stage; step_upgrade; step_resume; step_finalize ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac
 log "done: $CMD (logs in $RUN_DIR)"

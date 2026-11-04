@@ -9,11 +9,16 @@ NIFI_API_URL=https://nifi-1.example.com:8443/nifi-api   # any node; requests are
 # ---- versions / distribution --------------------------------------------------------------------
 OLD_VERSION=2.0.0-M4
 NEW_VERSION=2.12.0
-DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip     # each node downloads (needs access to this host) ...
-#DIST_ZIP=/srv/dist/nifi-2.12.0-bin.zip                                   # ... or, air-gapped: the admin host copies this file
-                                                                          #     to every node (then leave DIST_URL empty)
-# value of https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512 (verify the .asc too!)
-DIST_SHA512=5891039ccf15234bb21c2d1c...REPLACE_WITH_FULL_VALUE
+# Release zip - pick ONE:
+#  a) zip already downloaded and checked on the admin host (no internet needed anywhere): set DIST_ZIP, or pass
+#     "-z /path/nifi-2.12.0-bin.zip" on the command line, or just put nifi-2.12.0-bin.zip next to nifi-upgrade.sh.
+#     stage copies it to every node (skipped where an identical copy is already there).
+DIST_ZIP=/data/soft/nifi-dist/nifi-2.12.0-bin.zip
+#  b) every node downloads it itself (nodes need access to this URL):
+#DIST_URL=https://downloads.apache.org/nifi/2.12.0/nifi-2.12.0-bin.zip
+# SHA-512 of the zip: required for b). Optional for a): if empty, nifi-upgrade.sh uses DIST_ZIP.sha512 when present,
+# otherwise computes it from the zip (you checked it already). Nodes always re-check the copy against this value.
+DIST_SHA512=
 
 # ---- layout on the nodes (same as the tested single-node layout) --------------------------------
 NIFI_BASE=/data/soft/nifi                  # contains nifi-<version>/ directories

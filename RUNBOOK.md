@@ -69,14 +69,17 @@ rollback   restore every node from its backup, point the symlink back, start the
    (e.g. `generate-ff-custom-text` → `Custom Text`). Update scripts that set properties by key.
 9. **Monitoring/health checks**: `GET /nifi-api/access/config` answers 401 on 2.12 (was 200). Use
    `/nifi-api/flow/about` with credentials, or a TCP check.
-10. Fill in `nifi-upgrade.conf` (copy the example). Get `DIST_SHA512` from
-    `https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512` and verify the `.asc` signature
-    against the Apache NiFi `KEYS` file.
+10. Fill in `nifi-upgrade.conf` (copy the example). If the zip is already on the admin host, set `DIST_ZIP` (or pass
+    `-z ZIP`) and leave `DIST_SHA512` empty: it is read from `ZIP.sha512` when present, otherwise computed from the
+    zip. Otherwise get `DIST_SHA512` from
+    `https://archive.apache.org/dist/nifi/2.12.0/nifi-2.12.0-bin.zip.sha512`. Either way, verify the `.asc` signature
+    against the Apache NiFi `KEYS` file once, wherever you downloaded the zip.
 11. **Network / air-gapped nodes.** The upgrade needs no internet access if you prepare these
     (`preflight` reports each one):
     * **Release zip**: download and verify it on a connected machine, then set `DIST_ZIP=/path/on/admin-host.zip`
-      and leave `DIST_URL` empty (the zip is copied to every node), or place `nifi-2.12.0-bin.zip` in `STAGE_DIR`
-      on each node.
+      or pass `-z` (the zip is copied to every node, skipped where an identical copy exists), or place
+      `nifi-2.12.0-bin.zip` in `STAGE_DIR` on each node. `offline/prepare-offline-bundle.sh` is optional; it is
+      only needed for the python3.12 RPMs and wheels.
     * **Python processor dependencies**: NiFi runs `pip install` on first start for Python processors that declare
       dependencies (`requirements.txt` / `ProcessorDetails.dependencies`), into `nifi.python.working.directory`
       (default `./work/python` = inside the install dir, so every new version re-installs). Externalize that

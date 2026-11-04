@@ -39,7 +39,7 @@ local-test.conf                 configuration used to test on a single host (NOD
 RUNBOOK.md                      operating procedure and test evidence
 UPGRADE-GUIDE-RHEL9.md          step-by-step offline upgrade of a 3-node RHEL 9 cluster (operator checklist)
 systemd/nifi.service            systemd unit for the /data layout (logs/pid in /data/soft/nifi/nifi-data)
-offline/prepare-offline-bundle.sh  build the offline bundle on a machine with internet (zip + checks, Python RPMs/wheels)
+offline/prepare-offline-bundle.sh  optional: build an offline bundle on a machine with internet (zip + checks, Python RPMs/wheels)
 certs/gen-nifi-certs.sh         private CA, node keystores, truststore and admin client certificate
 certs/NIFI-TLS.md               how TLS works in a NiFi cluster; certificate setup, rotation, troubleshooting
 ```
@@ -66,7 +66,7 @@ design; only the items below reach out, and each has an offline alternative.
 
 | What reaches out | When | Offline / air-gapped alternative |
 |---|---|---|
-| NiFi 2.12.0 release zip (`DIST_URL`, e.g. downloads.apache.org) | `stage`, once per node | Set `DIST_ZIP` (zip on the admin host, copied to each node) and leave `DIST_URL` empty, or put `nifi-2.12.0-bin.zip` in `STAGE_DIR` on each node beforehand. `DIST_SHA512` is a config value — nothing is fetched to check it |
+| NiFi 2.12.0 release zip (`DIST_URL`, e.g. downloads.apache.org) | `stage`, once per node | Already downloaded? Run with `-z /path/nifi-2.12.0-bin.zip` (or set `DIST_ZIP`): the zip is copied from the admin host to each node, and `DIST_SHA512` is optional (taken from `ZIP.sha512` or computed). Or put `nifi-2.12.0-bin.zip` in `STAGE_DIR` on each node beforehand. Nothing is fetched to check it |
 | Release signature check (`.asc` + Apache `KEYS`) | before the change | Do it on any connected machine, then carry the zip and its SHA-512 across |
 | `pip install` of **Python processor dependencies** | first start of 2.12.0 | Only for Python processors that declare dependencies (`requirements.txt` or `ProcessorDetails.dependencies`). NiFi caches them in `nifi.python.working.directory` (default `./work/python`, i.e. inside the install dir, so a new version re-installs). Either externalize that directory before the upgrade, or point pip at an internal mirror (`/etc/pip.conf`; `UV_INDEX_URL` if `uv` is installed — NiFi prefers it). `preflight` warns when this applies |
 | OS packages (Java 21, python3, unzip) | before the change | Internal package mirror |
@@ -88,9 +88,10 @@ The admin-host scripts use the Python standard library only — no `pip`.
 ## Quick start
 
 ```bash
-cp nifi-upgrade.conf.example nifi-upgrade.conf     # set NODES, NIFI_API_URL, DIST_SHA512, auth, backup dir
+cp nifi-upgrade.conf.example nifi-upgrade.conf     # set NODES, NIFI_API_URL, DIST_ZIP (or DIST_URL + DIST_SHA512), auth, backup dir
 ./nifi-upgrade.sh -c nifi-upgrade.conf preflight
 ./nifi-upgrade.sh -c nifi-upgrade.conf stage       # then review /data/soft/nifi/upgrade-report-*.txt on every node
+# zip already on the admin host and not in the config: add  -z /path/nifi-2.12.0-bin.zip  to preflight and stage
 
 # maintenance window
 ./nifi-upgrade.sh -c nifi-upgrade.conf upgrade     # stops at VERIFY PASSED, with everything still stopped

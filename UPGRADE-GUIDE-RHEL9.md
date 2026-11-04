@@ -214,7 +214,25 @@ command -v zstd || echo "no zstd -> use BACKUP_COMPRESS=gzip"
 
 ---
 
-## Phase 2 — Build the offline bundle (transfer host, with internet)
+## Phase 2 — Get the release zip and the project into the network
+
+### 2.0 Shortcut: you already have `nifi-2.12.0-bin.zip` (and checked its SHA-512)
+
+You don't need the bundle script. Copy the project and the zip to the admin host:
+
+```
+/srv/nifi-upgrade/runbook/                   this repository (git clone, or a copy of it)
+/srv/nifi-upgrade/nifi-2.12.0-bin.zip        the release zip
+/srv/nifi-upgrade/nifi-2.12.0-bin.zip.sha512 optional: Apache's checksum file; checked automatically when present
+```
+
+Set `B=/srv/nifi-upgrade` and skip to **3.2**. In 3.6 set only `DIST_ZIP=$B/nifi-2.12.0-bin.zip` (leave
+`DIST_URL` and `DIST_SHA512` empty), or pass `-z $B/nifi-2.12.0-bin.zip` on the command line. `nifi-upgrade.sh`
+then checks that the file really is the 2.12.0 release, uses the `.sha512` file or computes the SHA-512 itself, copies
+the zip to each node (skipped where an identical copy is already there) and the node re-checks the copy.
+
+You still need the bundle script, or your own internal mirror, only for Python processors: the python3.12 RPMs
+(step 3.3) and the wheels for their dependencies (step 3.4).
 
 ### 2.1 Get the project
 
@@ -335,7 +353,7 @@ curl -s --cacert /path/ca.pem --cert /path/admin.crt --key /path/admin.key \
 ```bash
 cd $B/runbook
 cp nifi-upgrade.conf.example nifi-upgrade.conf
-grep DIST_SHA512 $B/nifi/DIST_SHA512          # value to paste below
+grep DIST_SHA512 $B/nifi/DIST_SHA512          # bundle only: value to paste below (2.0 shortcut: leave it empty)
 ```
 
 Edit `nifi-upgrade.conf`:
@@ -348,8 +366,8 @@ NIFI_API_URL=https://10.0.178.10:8443/nifi-api   # must match a name/IP in the n
 OLD_VERSION=2.0.0-M4
 NEW_VERSION=2.12.0
 DIST_URL=                                        # empty = offline
-DIST_ZIP=/srv/nifi-upgrade/nifi-offline-bundle-2.12.0/nifi/nifi-2.12.0-bin.zip
-DIST_SHA512=<value from nifi/DIST_SHA512>
+DIST_ZIP=/srv/nifi-upgrade/nifi-offline-bundle-2.12.0/nifi/nifi-2.12.0-bin.zip   # 2.0 shortcut: /srv/nifi-upgrade/nifi-2.12.0-bin.zip
+DIST_SHA512=<value from nifi/DIST_SHA512>        # 2.0 shortcut: empty (taken from .sha512 file or computed)
 
 NIFI_BASE=/data/soft/nifi
 NIFI_LINK=/data/soft/nifi/current
@@ -389,6 +407,7 @@ On RHEL 9, look for these lines:
 |---|---|
 | `ok java 21` | — |
 | `FAIL data path inside install dir` | move that directory out of `/data/soft/nifi/nifi-2.0.0-M4` first (RUNBOOK §3 item 2) |
+| `release: /srv/.../nifi-2.12.0-bin.zip (SHA-512 matches ...)` or `computing SHA-512 ...` | zip found and accepted on the admin host |
 | `INFO stage expects DIST_ZIP pushed from the admin host` | correct for offline |
 | `FAIL flow uses Python processors but nifi.python.command=... is Python 3.9` | do step 3.3 |
 | `WARN Python processors declare pip dependencies ...` | do step 3.4 |
@@ -401,7 +420,8 @@ On RHEL 9, look for these lines:
 ./nifi-upgrade.sh -c nifi-upgrade.conf stage
 ```
 
-This copies the zip to each node, verifies its SHA-512, unpacks `/data/soft/nifi/nifi-2.12.0` and carries the
+This copies the zip to each node (skipped if the node already has an identical copy), verifies
+its SHA-512, unpacks `/data/soft/nifi/nifi-2.12.0` and carries the
 configuration over. The running cluster is not touched.
 
 ### 4.3 Review the per-node report
