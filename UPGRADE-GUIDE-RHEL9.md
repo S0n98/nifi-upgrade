@@ -223,6 +223,41 @@ df -h /data /data/backups           # need >= 4 GB in /data/soft/nifi, plus room
 command -v zstd || echo "no zstd -> use BACKUP_COMPRESS=gzip"
 ```
 
+### 1.4 Extra NARs that are not in the 2.12.0 zip
+
+The standard `nifi-2.12.0-bin.zip` doesn't contain the Hadoop group of NARs: Apache only builds them into the release
+with the optional `include-hadoop` profile. If your M4 install has them, you must add the 2.12.0 versions yourself
+(step 2.4, copied in step 4.2.1). Otherwise every processor and service from them becomes a ghost component after the
+upgrade (in the flow but unable to run), and verify fails.
+
+```bash
+cd /data/soft/nifi/nifi-2.0.0-M4
+ls lib extensions 2>/dev/null | grep -E 'hadoop|parquet|kudu|hive|iceberg' | sort -u
+```
+
+| M4 NAR | 2.12.0 | Action |
+|---|---|---|
+| `nifi-hadoop-libraries-nar-2.0.0-M4.nar` | `nifi-hadoop-libraries-nar-2.12.0.nar` | add (the Hadoop and Parquet NARs depend on it) |
+| `nifi-hadoop-nar-2.0.0-M4.nar` | `nifi-hadoop-nar-2.12.0.nar` | add (HDFS processors) |
+| `nifi-parquet-nar-2.0.0-M4.nar` | `nifi-parquet-nar-2.12.0.nar` | add (Parquet reader/writer) |
+| `nifi-hadoop-dbcp-service-nar-2.0.0-M4.nar` | `nifi-hadoop-dbcp-service-nar-2.12.0.nar` | add if present (Hive/Impala JDBC with Kerberos) |
+| `nifi-kudu-nar-2.0.0-M4.nar` | **does not exist** (removed after 2.0.0-M4) | replace Kudu in your flows **before** the upgrade, see below |
+| any NAR you built yourself | — | rebuild it against NiFi 2.12.0 |
+
+Iceberg, AWS, Azure, GCP, Kafka and Avro NARs are already in the 2.12.0 zip; don't add them.
+
+**Kudu.** Check whether any flow uses Kudu:
+
+```bash
+sudo zcat /data/soft/nifi/nifi-data/flow.json.gz | grep -o '"type":"[^"]*[Kk]udu[^"]*"' | sort | uniq -c
+```
+
+No output means you can drop the Kudu NAR. Otherwise, replace those components before the upgrade, for example with
+`PutDatabaseRecord` writing through the Impala JDBC driver, or by moving the data to Iceberg. Don't load the
+2.0.0-M4 Kudu NAR into 2.12.0; it was built for a different NiFi API.
+
+Never copy the **M4** NARs into 2.12.0. That means leaving `COPY_CUSTOM_NARS=no` in `nifi-upgrade.conf`.
+
 ---
 
 ## Phase 2 — Get the release zip and the project into the network
@@ -241,6 +276,8 @@ Set `B=/srv/nifi-upgrade` and skip to **3.2**. In 3.6 set only `DIST_ZIP=$B/nifi
 `DIST_URL` and `DIST_SHA512` empty), or pass `-z $B/nifi-2.12.0-bin.zip` on the command line. `nifi-upgrade.sh`
 then checks that the file really is the 2.12.0 release, uses the `.sha512` file or computes the SHA-512 itself, copies
 the zip to each node (skipped where an identical copy is already there) and the node re-checks the copy.
+
+If step 1.4 found Hadoop/Parquet NARs, also bring the 2.12.0 NARs from step 2.4.
 
 You still need the bundle script, or your own internal mirror, only for Python processors: the python3.12 RPMs
 (step 3.3) and the wheels for their dependencies (step 3.4).
@@ -283,6 +320,24 @@ download the zip again.
 ### 2.3 Carry two files into the network
 
 `nifi-offline-bundle-2.12.0.tar` and `nifi-offline-bundle-2.12.0.tar.sha256` → admin host, e.g. `/srv/nifi-upgrade/`.
+
+### 2.4 Download the extra 2.12.0 NARs (only if step 1.4 found any)
+
+On a machine with internet, from Maven Central. Each file is checked against the `.sha1` that Maven Central
+publishes next to it. Keep only the NARs that step 1.4 listed:
+
+```bash
+mkdir -p nars-2.12.0 && cd nars-2.12.0
+for a in nifi-hadoop-libraries-nar nifi-hadoop-nar nifi-parquet-nar; do   # + nifi-hadoop-dbcp-service-nar if needed
+  u=https://repo1.maven.org/maven2/org/apache/nifi/$a/2.12.0/$a-2.12.0.nar
+  curl -fLO "$u" && curl -fsL "$u.sha1" | awk -v f="$a-2.12.0.nar" '{print $1"  "f}' | sha1sum -c - || echo "FAILED: $a"
+done
+sha256sum *.nar > SHA256SUMS
+cd ..
+```
+
+Expected: one `...: OK` line per NAR and no `FAILED`. Carry the `nars-2.12.0/` directory into the network together
+with the zip, e.g. to `/srv/nifi-upgrade/nars-2.12.0/` on the admin host.
 
 ---
 
@@ -440,6 +495,32 @@ On RHEL 9, look for these lines:
 This copies the zip to each node (skipped if the node already has an identical copy), verifies
 its SHA-512, unpacks `/data/soft/nifi/nifi-2.12.0` and carries the
 configuration over. The running cluster is not touched.
+
+### 4.2.1 Copy the extra NARs into 2.12.0 (only if step 1.4 found any)
+
+Right after `stage`, before the window. The NARs go into the **new** release's `extensions/` directory, never into
+`nifi-2.0.0-M4`:
+
+```bash
+cd /srv/nifi-upgrade/nars-2.12.0
+sha256sum -c SHA256SUMS                                     # all OK after the transfer
+for n in 10.0.178.10 10.0.178.11 10.0.178.12; do
+  echo "== $n"
+  scp *.nar SHA256SUMS ops@$n:/tmp/ &&
+  ssh ops@$n 'cd /tmp && sha256sum -c --quiet SHA256SUMS &&
+    sudo install -o nifi -g nifi -m 644 /tmp/nifi-*-2.12.0.nar /data/soft/nifi/nifi-2.12.0/extensions/ &&
+    rm -f /tmp/nifi-*-2.12.0.nar /tmp/SHA256SUMS &&
+    ls -l /data/soft/nifi/nifi-2.12.0/extensions/'
+done
+```
+
+Each node must list the same `.nar` files, owned by `nifi`. If you have to restage later with `FORCE_RESTAGE=yes`,
+`stage` rebuilds `nifi-2.12.0` from the zip and these files are gone: repeat this step.
+
+After the upgrade, verify fails with `no ghost components` if a NAR is missing. In that case copy the missing NAR to
+`extensions/` on every node. NiFi loads NARs from `extensions/` while running; if the components still show as
+ghosts after a minute, restart all nodes together (processors stay stopped, because `autoResumeState` is still false).
+Then re-run `verify`.
 
 ### 4.3 Review the per-node report
 

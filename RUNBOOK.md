@@ -63,7 +63,10 @@ rollback   restore every node from its backup, point the symlink back, start the
    as the NiFi admin (OIDC browser logins cannot be scripted reliably). Alternatively `NIFI_TOKEN_CMD`.
    `certs/gen-nifi-certs.sh` issues one; see `certs/NIFI-TLS.md` for the identity string and policies.
 6. **Back up separately**: `nifi.sensitive.props.key` (in `nifi.properties`), keystores and their passwords, ZooKeeper.
-7. **Custom NARs**: rebuild them against 2.12.0. Custom Python processors: test them on 2.12.0
+7. **Custom NARs**: rebuild them against 2.12.0. NARs that M4 had but the 2.12.0 zip doesn't ship (Hadoop,
+   Hadoop libraries, Parquet, Hadoop DBCP) must be downloaded as 2.12.0 builds and copied into
+   `nifi-2.12.0/extensions/` after `stage`. Kudu has no 2.x build, so replace it before the upgrade. See
+   [UPGRADE-GUIDE-RHEL9.md](UPGRADE-GUIDE-RHEL9.md) steps 1.4, 2.4 and 4.2.1. Custom Python processors: test them on 2.12.0
    (the type-name change is handled by `patch-flow`; API changes are not).
 8. **Automation that talks to the NiFi API** (CI jobs, scripts): 2.12 renames many legacy property keys
    (e.g. `generate-ff-custom-text` → `Custom Text`). Update scripts that set properties by key.
